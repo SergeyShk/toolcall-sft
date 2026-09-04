@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+outputs/
+mlruns/
+data/
+.DS_Store
+train.log
+*.log

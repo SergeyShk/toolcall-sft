@@ -1,0 +1,33 @@
+# Single-GPU CUDA run: Qwen3-8B in 4-bit (QLoRA), fused cross-entropy, MLflow.
+# Needs `uv sync --group cuda` for bitsandbytes and liger-kernel — both Linux/CUDA
+# only, and `tcsft-train` refuses them on any other device rather than failing
+# somewhere inside the trainer.
+run_name: payments-qwen3-8b-qlora
+base_model: Qwen/Qwen3-8B
+output_dir: outputs/payments-qwen3-8b-qlora
+
+dataset:
+  train_path: data/train.jsonl
+  eval_path: data/eval.jsonl
+  max_seq_length: 2048
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+
+training:
+  epochs: 2
+  learning_rate: 2.0e-4
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8
+  device: cuda
+  precision: bf16
+  gradient_checkpointing: true
+  load_in_4bit: true
+  use_liger_kernel: true
+  seed: 42
+
+tracking:
+  report_to: ["mlflow"]
+  mlflow_experiment: toolcall-sft

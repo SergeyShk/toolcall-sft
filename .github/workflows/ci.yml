@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The root package needs no torch, so the suite runs on a small install.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --no-default-groups --group test --python ${{ matrix.python-version }}
+      - run: uv run --no-sync pytest tests
+
+  # Type-checking training/ needs the real torch and peft, so this job takes the
+  # full environment — and only needs to run once.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run --no-sync ruff format --check src tests
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync pyright
