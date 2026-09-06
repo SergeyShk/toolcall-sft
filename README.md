@@ -308,4 +308,4 @@ Layout — `src/toolcall_sft/`:
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Copyright 2026 Sergei Shkarin. Licensed under the Apache License 2.0 — see [LICENSE](LICENSE).
