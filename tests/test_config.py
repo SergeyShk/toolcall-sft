@@ -98,3 +98,55 @@ def test_load_experiment_config_keeps_declared_tracking(tmp_path: Path) -> None:
 
     assert config.tracking.report_to == ("mlflow",)
     assert config.tracking.mlflow_experiment == "demo"
+
+
+def test_load_experiment_config_rejects_unknown_keys(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG + "  grad_checkpointing: false\n"
+
+    with pytest.raises(ConfigError, match="unknown key.*training.grad_checkpointing"):
+        load_experiment_config(_write_config(tmp_path, text))
+
+
+def test_load_experiment_config_rejects_unknown_top_level_keys(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG + "trainer: {}\n"
+
+    with pytest.raises(ConfigError, match="unknown key.*trainer"):
+        load_experiment_config(_write_config(tmp_path, text))
+
+
+def test_load_experiment_config_rejects_unknown_scheduler(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG + "  lr_scheduler: cosinus\n"
+
+    with pytest.raises(ConfigError, match="training.lr_scheduler"):
+        load_experiment_config(_write_config(tmp_path, text))
+
+
+def test_load_experiment_config_eval_batch_follows_train_batch(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG.replace("per_device_batch_size: 1", "per_device_batch_size: 4")
+
+    config = load_experiment_config(_write_config(tmp_path, text))
+
+    assert config.training.eval_batch_size == 4
+
+
+def test_load_experiment_config_defaults_template_kwargs_to_non_thinking(tmp_path: Path) -> None:
+    config = load_experiment_config(_write_config(tmp_path, MINIMAL_CONFIG))
+
+    assert dict(config.dataset.chat_template_kwargs) == {"enable_thinking": False}
+
+
+def test_load_experiment_config_template_kwargs_can_be_emptied(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG.replace("  max_seq_length: 1024\n", "  max_seq_length: 1024\n  chat_template_kwargs: {}\n")
+
+    config = load_experiment_config(_write_config(tmp_path, text))
+
+    assert dict(config.dataset.chat_template_kwargs) == {}
+
+
+def test_load_experiment_config_template_kwargs_must_be_scalars(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG.replace(
+        "  max_seq_length: 1024\n", "  max_seq_length: 1024\n  chat_template_kwargs: {tools: [1, 2]}\n"
+    )
+
+    with pytest.raises(ConfigError, match="chat_template_kwargs"):
+        load_experiment_config(_write_config(tmp_path, text))

@@ -8,7 +8,10 @@ that has to be reconstructed at serving time.
 The prompt lives in ``system_prompt.txt`` next to this module rather than in a
 string literal: it is the file you are most likely to edit, it is the file most
 worth diffing between two runs, and it is what you have to hand the serving side
-verbatim.
+verbatim. One detail of "verbatim": the file is read with surrounding whitespace
+stripped, so the trained prompt has no trailing newline. Serve ``SYSTEM_PROMPT``
+from this module, or strip the file the same way — a trailing newline is one
+extra token the model never saw.
 
 Three tools is enough to exercise everything a tool-calling tune has to learn: a
 lookup whose result decides what happens next (``get_payees``), a write that must

@@ -10,10 +10,14 @@ Three sources of sensitive terms:
 - values harvested from tool payloads under name-like keys — payee and
   account-holder names travel through tool results into replies, so the tool
   payloads know exactly which names to scrub. Harvesting is regex-based on the
-  raw payload text: production tool results are not always clean JSON;
+  raw payload text: production tool results are not always clean JSON. Keys
+  are matched case-insensitively with underscores and hyphens ignored, so
+  ``payee_name``, ``payeeName`` and ``PayeeName`` are the same key;
 - a profile block in the system prompt (``- **Label**: value`` lines) —
   name labels become global name terms, date-of-birth and address values
-  are replaced in place.
+  are replaced in place. This is an example of a deployment-specific hook,
+  written for one prompt layout; if your prompt embeds customer details in
+  another shape, ``_iter_profile_terms`` is the function to replace.
 
 Financial fields (account number, IBAN, BIC) are additionally replaced by key
 wherever ``"key": "value"`` appears in a payload, regardless of the value's
@@ -24,17 +28,19 @@ original text in priority order — key-driven financial values and protected
 amounts first, then exact profile values (date of birth, address), then the
 structured detectors, then harvested names — and a claimed span is never
 rescanned. An email address containing a harvested name is therefore replaced
-as one email, and a fake is never itself re-replaced.
+as one email, and a fake is never itself re-replaced. Name terms match whole
+words only: a harvested ``Lee`` does not touch ``fleet``.
 
 Replacements are deterministic in (salt, kind, original), so the same value
 maps to the same fake everywhere: an id passed from a tool result into a later
 tool call stays consistent, and re-running the pass is reproducible.
 Amounts are left untouched — they carry the scenario's semantics: values under
 amount-like keys are protected explicitly, and digit runs adjacent to a
-decimal dot are never treated as identifiers. A standalone 8-digit integer in
-free text is still treated as an account number. Tool schemas are never
-touched: their examples are static documentation and must stay byte-identical
-to what the model will be served with.
+decimal dot are never treated as identifiers. Any other standalone 8-digit
+integer in free text is treated as an account number — including dates written
+as ``20240315``, which come out as a different 8-digit number. Tool schemas are
+never touched: their examples are static documentation and must stay
+byte-identical to what the model will be served with.
 
 This is a mechanical pass, not a guarantee: a free-text name that never
 appears in a tool payload or the profile block survives it (an address inside
@@ -62,27 +68,35 @@ _LAST_NAMES = (
     "Ford", "Gray", "Hale", "Lane", "Nash", "Page", "Stone", "Wells",
 )  # fmt: skip
 
+
+def _normalize_key(key: str) -> str:
+    """Key identity used for every lookup: case, underscores and hyphens do not matter."""
+    return key.lower().replace("_", "").replace("-", "")
+
+
 _HARVEST_KEYS = frozenset(
-    {
+    _normalize_key(key)
+    for key in (
         "name", "first_name", "last_name", "full_name", "payee_name", "account_name",
         "account_holder", "account_holder_name", "beneficiary", "beneficiary_name",
         "company_name", "display_name", "legal_name", "trading_name", "customer_name",
         "payer_name", "payee", "recipient", "recipient_name", "holder_name", "business_name",
-    }
+    )
 )  # fmt: skip
 
 _FINANCIAL_KEYS: Mapping[str, str] = {
-    "account_number": "account_number",
-    "iban": "iban",
-    "bic_swift": "bic",
-    "bic": "bic",
-    "swift": "bic",
+    _normalize_key("account_number"): "account_number",
+    _normalize_key("iban"): "iban",
+    _normalize_key("bic_swift"): "bic",
+    _normalize_key("bic"): "bic",
+    _normalize_key("swift"): "bic",
 }
 
 _SKIP_VALUES = frozenset({"-", "n/a", "none", "not set", "unknown", "null", "true", "false"})
 
 # Keys whose numeric values are money, not identifiers — protected from the digit detectors.
-_PROTECTED_KEYS = re.compile(r"amount|price|total|balance|fee|cents|minor_units")
+# Matched against the normalized key, hence "minorunits" rather than "minor_units".
+_PROTECTED_KEYS = re.compile(r"amount|price|total|balance|fee|cents|minorunits")
 
 _DETECTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
@@ -98,7 +112,7 @@ _DETECTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("account_number", re.compile(r"(?<![\d.])\d{8}(?![\d.])")),
 )
 
-_KEY_VALUE = re.compile(r'"(?P<key>[a-z_]+)"(?P<sep>\s*:\s*)"(?P<value>[^"]{2,120})"')
+_KEY_VALUE = re.compile(r'"(?P<key>[A-Za-z][A-Za-z0-9_-]*)"(?P<sep>\s*:\s*)"(?P<value>[^"]{2,120})"')
 _PROFILE_LINE = re.compile(r"(?m)^\s*-\s*\*\*(?P<label>[^*]+)\*\*\s*:\s*(?P<value>.+?)\s*$")
 
 
@@ -138,13 +152,14 @@ class Anonymizer:
 
     def __anonymize_message(self, message: Message, terms: Sequence[tuple[str, str]], counts: Counter[str]) -> Message:
         tool_calls = tuple(
-            ToolCall(name=call.name, arguments=self.__scrub_json(call.arguments, terms, counts))
+            ToolCall(name=call.name, arguments=self.__scrub_json(call.arguments, terms, counts), id=call.id)
             for call in message.tool_calls
         )
         return Message(
             role=message.role,
             content=self.__scrub_text(message.content, terms, counts),
             tool_calls=tool_calls,
+            tool_call_id=message.tool_call_id,
         )
 
     def __scrub_json(
@@ -163,7 +178,8 @@ class Anonymizer:
             return [self.__scrub_value(item, key, terms, counts) for item in value]
         if isinstance(value, bool):
             return value
-        financial_kind = _FINANCIAL_KEYS.get(key or "")
+        normalized = _normalize_key(key) if key is not None else ""
+        financial_kind = _FINANCIAL_KEYS.get(normalized)
         if isinstance(value, int):
             if financial_kind is None:
                 return value
@@ -174,7 +190,7 @@ class Anonymizer:
             if financial_kind is not None and _is_meaningful(value):
                 counts[financial_kind] += 1
                 return self.__fake(financial_kind, value)
-            if key is not None and _PROTECTED_KEYS.search(key) and _is_numeric_like(value):
+            if normalized and _PROTECTED_KEYS.search(normalized) and _is_numeric_like(value):
                 return value
             return self.__scrub_text(value, terms, counts)
         return value
@@ -191,7 +207,7 @@ class Anonymizer:
             return True
 
         for match in _KEY_VALUE.finditer(text):
-            key = match.group("key")
+            key = _normalize_key(match.group("key"))
             value = match.group("value")
             value_start, value_end = match.span("value")
             kind = _FINANCIAL_KEYS.get(key)
@@ -232,7 +248,9 @@ class Anonymizer:
         claim: Callable[[int, int, str | None], bool],
         counts: Counter[str],
     ) -> None:
-        for match in re.finditer(re.escape(term), text, re.IGNORECASE):
+        # Whole words only: a short harvested name must not rewrite the inside of an ordinary word.
+        pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
+        for match in pattern.finditer(text):
             if claim(match.start(), match.end(), self.__fake(kind, term)):
                 counts[kind] += 1
 
@@ -283,7 +301,7 @@ def _iter_dialogue_terms(dialogue: Dialogue) -> Iterator[tuple[str, str]]:
 def _iter_payload_terms(content: str) -> Iterator[tuple[str, str]]:
     """Harvest name values from a tool payload by key, without requiring valid JSON."""
     for match in _KEY_VALUE.finditer(content):
-        if match.group("key") in _HARVEST_KEYS and _is_meaningful(match.group("value")):
+        if _normalize_key(match.group("key")) in _HARVEST_KEYS and _is_meaningful(match.group("value")):
             yield "name", match.group("value")
 
 
@@ -294,7 +312,7 @@ def _iter_argument_terms(value: object, key: str | None) -> Iterator[tuple[str, 
     elif isinstance(value, list):
         for item in value:
             yield from _iter_argument_terms(item, key)
-    elif isinstance(value, str) and key is not None and key.lower() in _HARVEST_KEYS and _is_meaningful(value):
+    elif isinstance(value, str) and key is not None and _normalize_key(key) in _HARVEST_KEYS and _is_meaningful(value):
         yield "name", value.strip()
 
 

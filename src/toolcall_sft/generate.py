@@ -17,7 +17,17 @@ fires the write tool and then has to admit it failed.
 
 Generation is deterministic in ``seed``: the same seed yields the same corpus,
 and dialogues are deduplicated by content fingerprint as they are built, so a
-requested count is a count of distinct examples.
+requested count is a count of distinct examples. "Distinct" is exact-match
+distinct: two dialogues that differ only in the closing sentence are two
+dialogues here, and they are near-duplicates for any honest evaluation. That is
+a property of template generation, not something a split can repair — see
+docs/DATASET.md.
+
+The pools are finite. The binding one is ``_OUT_OF_SCOPE``: 22 topics x 3
+phrasings x 5 hand-off sentences = 330 distinct dialogues, which at its 16%
+share caps the whole corpus at about 2060 dialogues with the default weights.
+Past that the generator refuses rather than repeating itself; grow the pool or
+reweight the branches.
 """
 
 import hashlib
@@ -74,6 +84,9 @@ _COMPANIES: tuple[str, ...] = (
 )
 
 _AMOUNTS: tuple[float, ...] = (25.0, 40.0, 75.5, 99.99, 120.0, 175.0, 250.0, 320.4, 450.0, 600.0, 875.25, 1200.0)
+# Declines draw from the same amounts plus a few large ones, so a big number is not a
+# tell: the model has to read the tool result, not guess from the request.
+_DECLINE_AMOUNTS: tuple[float, ...] = (*_AMOUNTS, 1750.0, 2400.0, 3100.0)
 _CURRENCIES: tuple[tuple[str, int], ...] = (("USD", 8), ("EUR", 1), ("CAD", 1))
 _SYMBOLS: Mapping[str, str] = {"USD": "$", "EUR": "€", "CAD": "CA$"}
 
@@ -186,6 +199,22 @@ _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
         ("Refund the payment I sent yesterday.", "Can you reverse a transfer?", "I need my money back."),
         "Customer wants a sent payment reversed, which I cannot do.",
     ),
+    (
+        (
+            "Can you send me a statement as a PDF?",
+            "I need proof of payment for the transfer I made.",
+            "Email me a receipt for last week's payment.",
+        ),
+        "Customer wants a document or receipt, which I cannot produce.",
+    ),
+    (
+        (
+            "Is the payment I made this morning still pending?",
+            "Has my transfer gone through yet?",
+            "Can you check the status of a payment I already sent?",
+        ),
+        "Customer is asking about the status of an existing payment, which I cannot look up.",
+    ),
 )
 
 _HANDOFFS: tuple[str, ...] = (
@@ -229,6 +258,7 @@ def generate_dialogues(count: int, *, seed: int = 42, weights: Mapping[str, int]
     rng = random.Random(seed)
     seen: set[str] = set()
     built: list[tuple[str, Dialogue]] = []
+    total_weight = sum(weight for weight in chosen.values() if weight > 0)
     for branch, quota in _quotas(count, chosen).items():
         produced = 0
         attempts = 0
@@ -247,10 +277,14 @@ def generate_dialogues(count: int, *, seed: int = 42, weights: Mapping[str, int]
             built.append((branch, dialogue))
             produced += 1
         if produced < quota:
+            # With a 50x attempt budget the branch has all but certainly been drained, so
+            # `produced` is its pool size and scales to a ceiling for the whole corpus.
+            ceiling = produced * total_weight // chosen[branch]
             raise GenerationError(
                 f"branch {branch!r}: only {produced} distinct dialogues available for the "
-                f"requested {quota} after {attempts} attempts — the templates are exhausted, "
-                f"lower --count or reweight the branches"
+                f"requested {quota} after {attempts} attempts — the templates are exhausted. "
+                f"With these weights the corpus tops out around {ceiling} dialogues; "
+                "lower --count, reweight the branches, or grow the branch's template pool"
             )
     rng.shuffle(built)
     return tuple(
@@ -358,7 +392,7 @@ def _missing_amount(rng: random.Random) -> tuple[Message, ...]:
 def _payment_declined(rng: random.Random) -> tuple[Message, ...]:
     """The write tool fires and comes back refused — the model must not claim success."""
     payee = _payee(rng)
-    amount = rng.choice((1200.0, 1750.0, 2400.0, 3100.0))
+    amount = rng.choice(_DECLINE_AMOUNTS)
     currency = _currency(rng)
     money = _money(amount, currency)
     code, explanation = rng.choice(_DECLINE_REASONS)
@@ -479,12 +513,16 @@ def _cancelled(rng: random.Random) -> tuple[Message, ...]:
 def _out_of_scope(rng: random.Random) -> tuple[Message, ...]:
     """Everything the assistant cannot do leaves through escalate, never through an improvised answer."""
     phrasings, reason = rng.choice(_OUT_OF_SCOPE)
-    ticket = f"esc_{hashlib.sha256(reason.encode()).hexdigest()[:8]}"
+    ask = rng.choice(phrasings)
+    handoff = rng.choice(_HANDOFFS)
+    # Derived from the dialogue's own text rather than drawn at random: two dialogues that
+    # read the same get the same ticket, so the fingerprint dedup still sees them as one.
+    ticket = f"esc_{hashlib.sha256(f'{ask}|{handoff}'.encode()).hexdigest()[:8]}"
     return (
-        Message(role=Role.USER, content=rng.choice(phrasings)),
+        Message(role=Role.USER, content=ask),
         _calls(ToolCall(name="escalate", arguments={"reason": reason})),
         _result({"status": "escalated", "ticket_id": ticket}),
-        Message(role=Role.ASSISTANT, content=rng.choice(_HANDOFFS)),
+        Message(role=Role.ASSISTANT, content=handoff),
     )
 
 
@@ -543,7 +581,7 @@ def _money(amount: float, currency: str) -> str:
     return f"{_SYMBOLS[currency]}{amount:,.2f}"
 
 
-def _confirm(rng: random.Random, payee: "_Payee", money: str) -> str:
+def _confirm(rng: random.Random, payee: _Payee, money: str) -> str:
     """The read-back the prompt requires before create_payment may fire."""
     return rng.choice(
         (

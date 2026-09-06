@@ -36,7 +36,7 @@ def train(config_path: Path) -> None:
         raise click.ClickException(str(error)) from error
     try:
         with _tracking(experiment, config_path):
-            adapter_dir = run_sft(experiment)
+            adapter_dir = run_sft(experiment, config_path=config_path)
     except (ConfigError, DatasetError, TemplateCompatibilityError) as error:
         raise click.ClickException(str(error)) from error
     click.echo(f"adapter saved to {adapter_dir}")
@@ -62,6 +62,14 @@ def _tracking(experiment: ExperimentConfig, config_path: Path) -> Generator[None
 @click.option("--adapter", type=click.Path(exists=True, file_okay=False, path_type=Path), required=True)
 @click.option("--output", type=click.Path(file_okay=False, path_type=Path), required=True)
 def merge(adapter: Path, output: Path) -> None:
-    """Merge a LoRA adapter into its base model for standalone serving."""
-    merged = merge_adapter(adapter_dir=adapter, output_dir=output)
+    """Merge a LoRA adapter into its base model for standalone serving.
+
+    The merged model inherits the base model's generation_config. For a Qwen3 tune,
+    which is only valid in non-thinking mode, set the sampling parameters Qwen
+    recommends for that mode at the server (temperature 0.7, top_p 0.8, top_k 20).
+    """
+    try:
+        merged = merge_adapter(adapter_dir=adapter, output_dir=output)
+    except OSError as error:
+        raise click.ClickException(str(error)) from error
     click.echo(f"merged model saved to {merged}")

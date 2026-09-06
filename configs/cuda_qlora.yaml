@@ -2,6 +2,10 @@
 # Needs `uv sync --group cuda` for bitsandbytes and liger-kernel — both Linux/CUDA
 # only, and `tcsft-train` refuses them on any other device rather than failing
 # somewhere inside the trainer.
+#
+# This config has not been run end to end by the author (no CUDA machine at hand);
+# the code paths it exercises are the standard transformers + peft ones, but treat
+# the first run as a smoke test and read the log.
 run_name: payments-qwen3-8b-qlora
 base_model: Qwen/Qwen3-8B
 output_dir: outputs/payments-qwen3-8b-qlora
@@ -10,6 +14,8 @@ dataset:
   train_path: data/train.jsonl
   eval_path: data/eval.jsonl
   max_seq_length: 2048
+  chat_template_kwargs:
+    enable_thinking: false
 
 lora:
   r: 32
@@ -20,6 +26,7 @@ training:
   epochs: 2
   learning_rate: 2.0e-4
   per_device_batch_size: 2
+  eval_batch_size: 2
   gradient_accumulation_steps: 8
   device: cuda
   precision: bf16

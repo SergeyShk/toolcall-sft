@@ -5,7 +5,6 @@ from tokenizers.pre_tokenizers import Split
 from transformers import PreTrainedTokenizerFast
 
 from toolcall_sft import (
-    LABEL_IGNORE_INDEX,
     Dialogue,
     DialogueTokenCount,
     Message,
@@ -18,10 +17,14 @@ from toolcall_sft import (
     tokenize_dialogue,
 )
 
-CHAT_TEMPLATE = "{% for message in messages %}<|{{ message.role }}|>{{ message.content }}<|end|>\n{% endfor %}"
+CHAT_TEMPLATE = (
+    "{% for message in messages %}<|{{ message.role }}|>{{ message.content }}<|end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|assistant|>{% endif %}"
+)
 
 NONVERBATIM_TEMPLATE = (
     "{% for message in messages %}<|{{ message.role }}|>{{ message.content | upper }}<|end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|assistant|>{% endif %}"
 )
 
 
@@ -47,17 +50,32 @@ def _dialogue(dialogue_id: str, reply: str) -> Dialogue:
     )
 
 
-def test_compute_token_stats_counts_total_and_trained_tokens() -> None:
-    tokenizer = _char_tokenizer(CHAT_TEMPLATE)
-    dialogue = _dialogue("d1", "Hi")
+def _two_turn_dialogue() -> Dialogue:
+    return Dialogue(
+        dialogue_id="d2",
+        messages=(
+            Message(role=Role.USER, content="Hello"),
+            Message(role=Role.ASSISTANT, content="Hi"),
+            Message(role=Role.USER, content="Pay rent"),
+            Message(role=Role.ASSISTANT, content="Sure"),
+        ),
+    )
 
-    report = compute_token_stats(tokenizer, (dialogue,))
+
+def test_compute_token_stats_counts_examples_longest_epoch_and_trained_tokens() -> None:
+    tokenizer = _char_tokenizer(CHAT_TEMPLATE)
+
+    report = compute_token_stats(tokenizer, (_two_turn_dialogue(),))
 
     assert len(report.counts) == 1
     count = report.counts[0]
     # Char-level tokenizer: token counts equal rendered character counts.
-    assert count.total_tokens == len("<|user|>Hello<|end|>\n<|assistant|>Hi<|end|>\n")
-    assert count.trained_tokens == len("Hi<|end|>\n")
+    first = "<|user|>Hello<|end|>\n<|assistant|>Hi<|end|>\n"
+    second = "<|user|>Hello<|end|>\n<|assistant|>Hi<|end|>\n<|user|>Pay rent<|end|>\n<|assistant|>Sure<|end|>\n"
+    assert count.examples == 2
+    assert count.longest_example == len(second)
+    assert count.epoch_tokens == len(first) + len(second)
+    assert count.trained_tokens == len("Hi<|end|>\n") + len("Sure<|end|>\n")
     assert report.failures == ()
 
 
@@ -87,7 +105,7 @@ def test_filter_by_length_drops_long_dialogues_preserving_kept_order() -> None:
     short_one = _dialogue("d1", "Hi")
     long_one = _dialogue("d2", "A" * 100)
     short_two = _dialogue("d3", "Yo")
-    long_example = tokenize_dialogue(tokenizer, long_one)
+    long_example = tokenize_dialogue(tokenizer, long_one)[0]
 
     result = filter_by_length(tokenizer, (short_one, long_one, short_two), max_seq_length=50)
 
@@ -97,25 +115,27 @@ def test_filter_by_length_drops_long_dialogues_preserving_kept_order() -> None:
     assert result.dropped == (
         DialogueTokenCount(
             dialogue_id="d2",
-            total_tokens=len(long_example.input_ids),
-            trained_tokens=sum(1 for label in long_example.labels if label != LABEL_IGNORE_INDEX),
+            examples=1,
+            longest_example=len(long_example.input_ids),
+            epoch_tokens=len(long_example.input_ids),
+            trained_tokens=long_example.target_tokens,
         ),
     )
     assert result.failures == ()
 
 
-def test_filter_by_length_boundary_is_inclusive() -> None:
+def test_filter_by_length_judges_the_longest_example_of_a_dialogue() -> None:
     tokenizer = _char_tokenizer(CHAT_TEMPLATE)
-    dialogue = _dialogue("d1", "Hi")
-    exact = len(tokenize_dialogue(tokenizer, dialogue).input_ids)
+    dialogue = _two_turn_dialogue()
+    first, last = tokenize_dialogue(tokenizer, dialogue)
+    assert len(first.input_ids) < len(last.input_ids)
 
-    kept_result = filter_by_length(tokenizer, (dialogue,), max_seq_length=exact)
-    dropped_result = filter_by_length(tokenizer, (dialogue,), max_seq_length=exact - 1)
+    kept = filter_by_length(tokenizer, (dialogue,), max_seq_length=len(last.input_ids))
+    dropped = filter_by_length(tokenizer, (dialogue,), max_seq_length=len(last.input_ids) - 1)
 
-    assert kept_result.kept == (dialogue,)
-    assert kept_result.dropped == ()
-    assert dropped_result.kept == ()
-    assert [count.dialogue_id for count in dropped_result.dropped] == ["d1"]
+    assert kept.kept == (dialogue,)
+    assert dropped.kept == ()
+    assert [count.dialogue_id for count in dropped.dropped] == ["d2"]
 
 
 def test_filter_by_length_sends_template_failures_to_failures_only() -> None:

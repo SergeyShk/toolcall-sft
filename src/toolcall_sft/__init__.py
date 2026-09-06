@@ -1,11 +1,14 @@
 """LoRA fine-tuning of small local LLMs on multi-turn tool-calling dialogues.
 
-The root package stays free of heavy ML dependencies; training lives in
-``toolcall_sft.training`` and is pulled in only by the ``tcsft-train`` CLI.
+The root package stays free of torch; training lives in ``toolcall_sft.training``
+and is pulled in only by the ``tcsft-train`` CLI. transformers is needed at
+runtime only where a tokenizer is actually used (``masking``, ``stats``).
 """
 
 from .anonymizer import AnonymizationReport, Anonymizer
 from .config import (
+    DEFAULT_CHAT_TEMPLATE_KWARGS,
+    LR_SCHEDULERS,
     ConfigError,
     DatasetSettings,
     ExperimentConfig,
@@ -25,7 +28,13 @@ from .dataset import (
     write_dialogues,
 )
 from .generate import BRANCH_WEIGHTS, GenerationError, branch_names, generate_dialogues
-from .masking import LABEL_IGNORE_INDEX, MaskedExample, TemplateCompatibilityError, tokenize_dialogue
+from .masking import (
+    LABEL_IGNORE_INDEX,
+    MaskedExample,
+    TemplateCompatibilityError,
+    render_example,
+    tokenize_dialogue,
+)
 from .metrics import ToolCallComparison, ToolCallReport, aggregate_comparisons, compare_tool_calls
 from .scenario import SYSTEM_PROMPT, TOOLS, tool_names
 from .schema import (
@@ -55,9 +64,11 @@ from .stats import (
 
 __all__ = [
     "BRANCH_WEIGHTS",
+    "DEFAULT_CHAT_TEMPLATE_KWARGS",
     "DEFAULT_THRESHOLDS",
     "HISTOGRAM_EDGES",
     "LABEL_IGNORE_INDEX",
+    "LR_SCHEDULERS",
     "SYSTEM_PROMPT",
     "TOOLS",
     "AnonymizationReport",
@@ -100,6 +111,7 @@ __all__ = [
     "load_dialogues",
     "load_experiment_config",
     "percentile",
+    "render_example",
     "split_dialogues",
     "threshold_fits",
     "to_chat_record",

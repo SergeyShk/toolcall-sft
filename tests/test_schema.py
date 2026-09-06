@@ -132,3 +132,70 @@ def test_dialogue_ending_with_tool_call_is_valid() -> None:
     )
 
     assert dialogue.messages[-1].tool_calls
+
+
+def test_tool_call_ids_round_trip_and_reach_the_chat_form() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    raw["messages"][2]["tool_calls"][0]["id"] = "call_abc123"
+    raw["messages"][3]["tool_call_id"] = "call_abc123"
+
+    dialogue = dialogue_from_json(raw)
+
+    assert dialogue.messages[2].tool_calls[0].id == "call_abc123"
+    assert dialogue.messages[3].tool_call_id == "call_abc123"
+    assert dialogue_from_json(dialogue_to_json(dialogue)) == dialogue
+    record = to_chat_record(dialogue)
+    assert record["messages"][2]["tool_calls"][0]["id"] == "call_abc123"
+    assert record["messages"][3]["tool_call_id"] == "call_abc123"
+
+
+def test_tool_call_ids_do_not_change_the_fingerprint() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    raw["messages"][2]["tool_calls"][0]["id"] = "call_abc123"
+    raw["messages"][3]["tool_call_id"] = "call_abc123"
+
+    assert content_fingerprint(dialogue_from_json(raw)) == content_fingerprint(dialogue_from_json(RAW_DIALOGUE))
+
+
+def test_tool_call_id_matching_no_pending_call_raises() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    raw["messages"][2]["tool_calls"][0]["id"] = "call_abc123"
+    raw["messages"][3]["tool_call_id"] = "call_other"
+
+    with pytest.raises(DatasetError, match="matches no pending tool call"):
+        dialogue_from_json(raw)
+
+
+def test_tool_call_id_on_non_tool_message_raises() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    raw["messages"][1]["tool_call_id"] = "call_abc123"
+
+    with pytest.raises(DatasetError, match="only tool messages"):
+        dialogue_from_json(raw)
+
+
+def test_unanswered_tool_call_before_the_next_turn_raises() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    raw["messages"][2]["tool_calls"].append({"name": "get_payees", "arguments": {"query": "Jon"}})
+
+    with pytest.raises(DatasetError, match="have no tool result"):
+        dialogue_from_json(raw)
+
+
+def test_parallel_tool_calls_each_answered_are_valid() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    raw["messages"][2]["tool_calls"].append({"name": "get_payees", "arguments": {"query": "Jon"}})
+    raw["messages"].insert(4, {"role": "tool", "content": "[]"})
+
+    dialogue = dialogue_from_json(raw)
+
+    assert len(dialogue.messages) == 6
+
+
+def test_dialogue_may_end_on_an_unanswered_tool_call() -> None:
+    raw = copy.deepcopy(RAW_DIALOGUE)
+    del raw["messages"][3:]
+
+    dialogue = dialogue_from_json(raw)
+
+    assert dialogue.messages[-1].tool_calls

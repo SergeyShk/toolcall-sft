@@ -11,34 +11,40 @@ make lint
 ```
 
 `make lint` runs `ruff format --check`, `ruff check` and `pyright` in strict mode. CI runs exactly
-these on Python 3.11 and 3.13, so a green `make lint && make test` locally means a green CI.
+these on Python 3.11 through 3.13, plus a CLI smoke on the light install and the training smoke
+test on the full one, so a green `make lint && make test` locally means a green CI.
 
 `make fmt` applies the formatter and the autofixable lint rules.
 
 ## What the code tries to be
 
 Small enough to read in an afternoon. The value is in being obviously correct about a few things
-that are easy to get silently wrong — chat-template fidelity, loss masking, deterministic splits —
-not in covering every training feature.
+that are easy to get silently wrong — chat-template fidelity per turn, loss masking, deterministic
+splits — not in covering every training feature.
 
 A few conventions that are load-bearing:
 
-- **No silent fallbacks in the data path.** If a chat template does not round-trip assistant
-  content, if a tool result answers no pending call, if a dialogue exceeds the budget — say so and
-  stop. A dataset bug that trains successfully is worse than one that crashes.
+- **No silent fallbacks in the data path.** If a chat template cannot produce a prompt the server
+  would build, if a tool result answers no pending call, if a dialogue exceeds the budget, if a
+  config names a key that does not exist — say so and stop. A dataset bug that trains successfully
+  is worse than one that crashes.
 - **Comments explain *why*.** What the code does should be legible from the code. Comments are for
   the constraint that made it look like that.
 - **Types are strict.** `pyright` runs in strict mode and the codebase has no `type: ignore`.
-- **The root package stays free of torch.** `schema`, `dataset`, `masking`, `metrics`, `config`,
-  `stats`, `scenario`, `generate` and `anonymizer` are importable without a training install;
-  anything needing torch lives in `training/`.
+- **The root package stays free of torch, and light to import.** `schema`, `dataset`, `masking`,
+  `metrics`, `config`, `stats`, `scenario`, `generate` and `anonymizer` import without a training
+  install; transformers is imported only where a tokenizer is actually used, and only when it is
+  used, so `tcsft --help` stays instant. Anything needing torch lives in `training/`.
 
 ## Tests
 
 Every behavioural change needs a test. The existing suite is the guide to the style: real inputs,
 assertions on outcomes, no mocking of the code under test. Tokenizer-dependent behaviour is tested
 against small purpose-built tokenizers rather than a downloaded model, so the suite runs in seconds
-and offline.
+and offline; the Qwen3 chat template itself is vendored under `tests/templates/` so the per-turn
+rendering is tested against the real thing. `tests/test_training_smoke.py` trains a two-layer model
+built in the test through the real `Trainer`; it is marked `training` and skipped when torch is not
+installed.
 
 ## Pull requests
 

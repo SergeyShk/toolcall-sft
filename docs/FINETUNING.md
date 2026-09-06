@@ -25,7 +25,7 @@ local model learns to reproduce its behaviour on that flow.
 
 **Format.** Chat messages with tool calls, exactly as your inference server will render them:
 `system` (prompt + tool schemas) → `user` → `assistant(tool_call)` → `tool(result)` → … →
-`assistant(final)`. Loss on assistant tokens only.
+`assistant(final)`. One training example per assistant turn, loss on that turn's tokens only.
 
 **Where it comes from,** in rough order of value:
 
@@ -56,7 +56,7 @@ reference), size against your hardware, and a licence you can actually ship.
 | **Qwen3** | 0.6B / 1.7B / 4B / 8B / 14B / 30B-A3B / 32B | Apache 2.0 | Strongest open tool calling; the default choice |
 | Gemma 3 | 1B / 4B / 12B / 27B | Gemma terms | Strong for the size; check the licence against your use |
 | Llama 3.1 / 3.3 | 8B / 70B | Llama licence | Huge ecosystem, weaker at tool calling than Qwen |
-| Mistral Small 3.x | 24B | Apache 2.0 | Fast, decent function calling |
+| Mistral Small 3.x | 24B | Apache 2.0 | Fast, decent function calling; its template needs tool-call ids |
 | Phi-4 | 14B | MIT | Compact, good for experiments |
 
 Start smaller than you think — smaller than you will ship. The first thing you are debugging is
@@ -76,7 +76,11 @@ inference because only ~3B parameters are active.
   damage to general ability for no gain on a narrow flow.
 - Typical hyperparameters: `r=16-32`, `alpha=2×r`, lr `1-2e-4`, 2-3 epochs, cosine schedule,
   adapters on all linear projections. Context: whatever your dialogues actually need — measure with
-  `tcsft stats` rather than guessing.
+  `tcsft stats` rather than guessing, and remember the budget applies per turn: the last turn of a
+  dialogue carries the whole conversation as its prompt.
+- **Per-turn examples cost compute.** Each assistant turn re-processes the prompt before it, so an
+  epoch over four-turn dialogues costs roughly three times a whole-dialogue render would. The
+  alternative is training on prompts the server never builds (see trap 1). Pay the compute.
 - **DPO / KTO** is the second stage, and only if SFT leaves a *systematic* defect — hallucinated
   arguments, acting without confirmation. You collect good/bad pairs and train on the preference.
 - **GRPO** (RL with a verifiable reward) is genuinely viable here, precisely because the reward is
@@ -86,7 +90,8 @@ inference because only ~3B parameters are active.
 ## Evaluation
 
 1. **A held-out set** split at the *dialogue* level, deduplicated before splitting. Near-identical
-   dialogues leaking across the split is the most common way to fool yourself.
+   dialogues leaking across the split is the most common way to fool yourself, and a content-hash
+   split only catches exact duplicates — see [DATASET.md](DATASET.md#keeping-the-split-honest).
 2. **Programmatic tool-call metrics** — `tcsft evaluate`: fraction of schema-valid calls, tool-name
    exact match, argument accuracy, and the rate of calls that should not have happened at all. That
    last one is what the negative branches exist to measure.
@@ -107,21 +112,31 @@ inference because only ~3B parameters are active.
   narrow domain the quality cost is close to nothing.
 - **SGLang** as an alternative to vLLM, often faster on structured output.
 
-Whatever you pick, it must render the chat template the same way training did. This is the thing to
-verify first when a tune "mysteriously" underperforms.
+Whatever you pick, it must render the chat template the same way training did — including the
+template kwargs. A Qwen3 tune trained with `enable_thinking: false` has to be served with it; the
+empty think block the server inserts is part of every prompt the model was trained on. This is the
+thing to verify first when a tune "mysteriously" underperforms.
 
 ## The traps, in the order people hit them
 
-1. **Chat-template mismatch.** The single most common failure. Tool calls must serialize at training
-   time byte-for-byte the way the inference server renders them. Always use the base model's own
-   template; never hand-roll the format. This repo enforces it and fails loudly when a template does
-   not round-trip.
+1. **Chat-template mismatch.** The single most common failure, and it has a subtle form. The obvious
+   form is serializing tool calls by hand in a format the server does not use; always render with
+   the base model's own template. The subtle form is rendering the *whole dialogue* once and masking
+   the assistant turns: templates render history differently from the generation prompt — Qwen3
+   puts an empty `<think>` block only before the generation prompt and the final turn — so every
+   earlier assistant turn is trained on a prompt the server never builds, and the tool-call turns
+   are exactly those. This repo renders one example per assistant turn, each with the prompt the
+   server would build at that moment, and fails loudly when a template cannot produce one.
+   `tcsft render` shows the result; look at it before every run that changes the prompt or the
+   template.
 2. **Training on the prompt.** Without masking, the model learns to generate system prompts and tool
-   results. Verify that loss covers assistant tokens only — `tcsft stats` reports the trained-token
-   share, and a plausible number is a few percent to a few tens of percent, never ~100%.
+   results. Verify that loss covers the target only — `tcsft stats` reports the trained-token share
+   of an epoch, and a plausible number is a few percent (3.3% for the example scenario), never
+   ~100%.
 3. **Catastrophic forgetting.** Too many epochs or too high a learning rate on narrow data and the
    model forgets everything else. Evaluate on a general benchmark too, not only your flow.
-4. **Train/test leakage** through near-duplicate dialogues. Deduplicate before splitting, by content.
+4. **Train/test leakage** through near-duplicate dialogues. Deduplicate before splitting, by content,
+   and know that this only removes exact duplicates.
 5. **PII in the weights.** Not reversible after the fact.
 6. **Scenario drift.** Change the prompt or a tool schema and the tuned model degrades harder than a
    general one — it was trained on the old shape. Budget for periodic retraining from the start, and

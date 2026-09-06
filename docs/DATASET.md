@@ -13,20 +13,28 @@ Count *behaviours*, not examples. The working rule for a narrow LoRA tune is **5
 distinct behaviour that has to work reliably**. Seven branches at 100 each is 700 dialogues, and
 that number is a far better planning tool than a total.
 
+The bundled generator can supply up to about 2060 dialogues with the default weights before its
+`out_of_scope` pool runs dry; it refuses rather than repeats, and the error names the ceiling.
+
 ### The token-budget correction
 
-What the model actually learns from is assistant tokens — everything else is masked out.
-`tcsft stats` reports the share:
+Training examples are per assistant turn, and what the model learns from is the target tokens of
+each — everything before them is masked out. `tcsft stats --config configs/mac_mps.yaml` reports
+the three sizes that matter, here for the 300-dialogue demo corpus under Qwen3-0.6B:
 
 ```
-total tokens:   min 728  p50 880  p90 905  max 923
-trained tokens: min 38  p50 110  p90 125  max 136  (10.1% of total)
+dialogues: 300 (0 failed to tokenize), examples: 975 (one per assistant turn)
+longest example per dialogue: min 729  p50 877  p90 906  max 920   <- must fit max_seq_length
+tokens per epoch per dialogue: min 1426  p50 3181  p90 4000  max 4032   (763485 total)
+trained tokens per dialogue:   min 38  p50 109  p90 123  max 136   (3.3% of epoch)
 ```
 
-1000 dialogues at ~100 trained tokens is ~100K tokens of signal. That is enough for LoRA at r=16 on
-a small model, and it is why the *length* of your system prompt matters to cost but not to learning:
-a 6000-token prompt would drop the trained share to ~2% and multiply the compute per example by
-eight without adding a single token of signal.
+1000 dialogues at ~110 trained tokens is ~110K tokens of signal. That is enough for LoRA at r=16 on
+a small model. The other two numbers are cost: the longest example is what `max_seq_length` has to
+cover, and the tokens per epoch — every turn's prompt re-processed — are what you pay for. The
+*length* of your system prompt therefore matters to cost but not to learning, and it matters once
+per turn: a 6000-token prompt would drop the trained share below 1% and multiply the compute per
+dialogue by eight without adding a single token of signal.
 
 Below ~300 dialogues a LoRA learns the call *format* and stays unreliable on arguments and rare
 branches. That failure looks like success in a demo.
@@ -59,6 +67,8 @@ Three rules do the real work:
   the model was trained to make; a prompt instruction alone does not survive fine-tuning on data
   that never demonstrates it. `payment_declined` is the same idea applied to the write path: a tool
   can come back refused, and the model has to say so instead of reporting the success it expected.
+  Its amounts deliberately overlap with the happy path's, so a large number is not a tell — the
+  model has to read the tool result.
 
 Production usually cannot supply the rare branches in useful numbers. Top them up synthetically:
 that is what `tcsft generate` demonstrates, and what a simulator against your real tools does
@@ -70,25 +80,43 @@ properly.
 
 - a dialogue lands on the same side of the split regardless of its position in the file, which makes
   regenerating or re-exporting the data non-destructive to your eval set;
-- near-identical dialogues cannot straddle the split — the most common way a tool-calling eval ends
-  up reporting numbers it has not earned.
+- an exact duplicate — same messages, same tool calls, same tools, whitespace and argument order
+  aside — cannot appear on both sides.
 
 The tools list is part of the fingerprint, deliberately: a different tool catalogue renders a
 different training prompt, so it is a different example.
 
+What the hash split does **not** do is catch near-duplicates, and you should know how far that goes
+for your data. On the demo corpus it goes far: template-generated dialogues differ from each other
+by one phrase, so of the 50 tool-call targets in a 33-dialogue eval set, 33 appear verbatim in the
+training set, as do 17 of 56 text replies. That is why the README says this dataset cannot rank
+models — its held-out loss is mostly a measurement of leakage. Real dialogues are less repetitive
+but not immune: a customer who retried three times, a conversation re-exported twice, a support
+macro pasted into hundreds of chats. If your data has families like that, split by a family key
+(customer, session, macro) rather than by dialogue, or build the eval set by hand from dialogues
+you know are not paraphrases of training ones.
+
+The split is not stratified either. The hash decides each dialogue's side independently, so a rare
+branch can end up with two eval dialogues, or none. `tcsft split` prints the per-branch breakdown
+(by `dialogue_id` prefix) for exactly this reason — check it, and reweight or grow the corpus when
+a branch you care about is thin on the eval side.
+
 ## Bringing your own data
 
 1. Emit JSONL in the schema in the [README](../README.md). Anything that can produce a list of
-   messages with tool calls will do.
+   messages with tool calls will do. Tool-call ids are optional and pass through when present.
 2. `tcsft anonymize` **first**, if the dialogues came from a real system, and read a sample of the
    output yourself.
 3. `tcsft validate` — structural check plus a tool-call census, which is the fastest way to notice
    that one branch is missing entirely.
-4. `tcsft stats` — confirm the length distribution and the trained-token share before you commit to
-   a `max_seq_length`.
-5. `tcsft filter --max-seq-length N` if there is a tail of over-long dialogues; it drops them through
-   the same tokenization path training uses, so what survives is exactly what the trainer accepts.
-6. `tcsft split`, then train.
+4. `tcsft stats --config <your yaml>` — confirm the longest-example distribution and the
+   trained-token share before you commit to a `max_seq_length`.
+5. `tcsft render --config <your yaml>` — read one dialogue the way the trainer will see it. This is
+   where a template that renders your tool calls differently from what you expected shows up.
+6. `tcsft filter --config <your yaml>` if there is a tail of over-long dialogues; it drops them
+   through the same tokenization path training uses, so what survives is exactly what the trainer
+   accepts. The trainer itself refuses, by id, rather than dropping silently.
+7. `tcsft split`, then train.
 
 Replace [scenario.py](../src/toolcall_sft/scenario.py) and
 [system_prompt.txt](../src/toolcall_sft/system_prompt.txt) with your own toolset and prompt. Keeping

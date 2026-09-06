@@ -137,3 +137,45 @@ def test_declined_payment_is_never_reported_as_sent() -> None:
         assert '"status": "declined"' in dialogue.messages[-2].content
         closing = dialogue.messages[-1].content.lower()
         assert "sent" not in closing and "done" not in closing
+
+
+def test_the_documented_target_of_two_thousand_dialogues_is_reachable() -> None:
+    assert len(generate_dialogues(2000, seed=1)) == 2000
+
+
+def test_exhaustion_error_names_the_corpus_ceiling() -> None:
+    with pytest.raises(GenerationError, match="tops out around"):
+        generate_dialogues(400, weights={"out_of_scope": 1})
+
+
+def test_escalation_tickets_are_derived_from_the_dialogue_text() -> None:
+    """A random ticket would make every out_of_scope dialogue 'distinct' and defeat the dedup."""
+    first = [d for d in generate_dialogues(60, seed=3, weights={"out_of_scope": 1})]
+    second = [d for d in generate_dialogues(60, seed=3, weights={"out_of_scope": 1})]
+
+    assert [m.content for d in first for m in d.messages if m.role is Role.TOOL] == [
+        m.content for d in second for m in d.messages if m.role is Role.TOOL
+    ]
+
+
+def test_declined_amounts_overlap_with_the_amounts_of_other_branches() -> None:
+    """A big number must not be a tell for a decline: the model has to read the tool result."""
+    dialogues = generate_dialogues(600, seed=5)
+    declined = {
+        c.arguments["amount"]
+        for d in dialogues
+        if _branch_of(d) == "payment_declined"
+        for m in d.messages
+        for c in m.tool_calls
+        if c.name == "create_payment"
+    }
+    sent = {
+        c.arguments["amount"]
+        for d in dialogues
+        if _branch_of(d) == "happy_path"
+        for m in d.messages
+        for c in m.tool_calls
+        if c.name == "create_payment"
+    }
+
+    assert len(declined & sent) >= 5

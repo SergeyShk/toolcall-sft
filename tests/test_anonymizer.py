@@ -316,3 +316,50 @@ def test_anonymize_preserves_ids_consistency_across_messages() -> None:
     fake_id = anonymized.messages[3].tool_calls[0].arguments["payee_id"]
     assert fake_id != "64a1b2c3d4e5f6a7b8c9d0e1"
     assert fake_id in anonymized.messages[2].content
+
+
+def test_anonymize_name_terms_match_whole_words_only() -> None:
+    dialogue = Dialogue(
+        dialogue_id="tr-1",
+        messages=(
+            Message(role=Role.USER, content="Pay Lee for the fleet lease; Ann approved the annual plan"),
+            Message(role=Role.ASSISTANT, content="Paying Lee"),
+        ),
+    )
+
+    anonymized, report = Anonymizer(salt="v1", extra_terms=("Lee", "Ann")).anonymize_dialogue(dialogue)
+
+    scrubbed = anonymized.messages[0].content
+    assert "fleet" in scrubbed
+    assert "annual" in scrubbed
+    assert "Lee" not in scrubbed.split()
+    assert "Ann" not in scrubbed.split()
+    assert dict(report.replacements)["name"] == 3
+
+
+def test_anonymize_harvests_camel_case_keys() -> None:
+    dialogue = Dialogue(
+        dialogue_id="tr-1",
+        messages=(
+            Message(role=Role.USER, content="Pay Maria Lund"),
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=(ToolCall(name="lookup", arguments={"payeeName": "Maria Lund"}),),
+            ),
+            Message(
+                role=Role.TOOL,
+                content='{"payeeName": "Maria Lund", "accountNumber": "55512345", "totalAmount": "12345678"}',
+            ),
+            Message(role=Role.ASSISTANT, content="Found Maria Lund"),
+        ),
+    )
+
+    anonymized, report = Anonymizer(salt="v1").anonymize_dialogue(dialogue)
+
+    assert "Maria Lund" not in anonymized.messages[0].content
+    assert "Maria Lund" not in anonymized.messages[3].content
+    assert anonymized.messages[1].tool_calls[0].arguments["payeeName"] != "Maria Lund"
+    assert '"accountNumber": "55512345"' not in anonymized.messages[2].content
+    assert '"totalAmount": "12345678"' in anonymized.messages[2].content
+    assert dict(report.replacements)["account_number"] == 1

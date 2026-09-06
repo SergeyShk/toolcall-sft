@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  # The root package needs no torch, so the suite runs on a small install.
+  # The root package needs no torch, so the suite runs on a small install. The CLI
+  # smoke at the end is what catches an import that crept into the data-side path.
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -20,9 +21,16 @@ jobs:
           enable-cache: true
       - run: uv sync --no-default-groups --group test --python ${{ matrix.python-version }}
       - run: uv run --no-sync pytest tests
+      - name: CLI smoke on the light install
+        run: |
+          uv run --no-sync tcsft generate --out /tmp/all.jsonl --count 60
+          uv run --no-sync tcsft validate /tmp/all.jsonl
+          uv run --no-sync tcsft split /tmp/all.jsonl --train-out /tmp/train.jsonl --eval-out /tmp/eval.jsonl --eval-fraction 0.2
+          uv run --no-sync tcsft stats /tmp/all.jsonl --config configs/mac_mps.yaml
+          uv run --no-sync tcsft render /tmp/all.jsonl --config configs/mac_mps.yaml --turn 1
 
-  # Type-checking training/ needs the real torch and peft, so this job takes the
-  # full environment — and only needs to run once.
+  # Type-checking training/ needs the real torch and peft, so this job takes the full
+  # environment — and, having it, also runs the training smoke test on a tiny model.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -34,3 +42,4 @@ jobs:
       - run: uv run --no-sync ruff format --check src tests
       - run: uv run --no-sync ruff check src tests
       - run: uv run --no-sync pyright
+      - run: uv run --no-sync pytest tests -m training

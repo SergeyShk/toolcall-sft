@@ -69,6 +69,7 @@ packages = ["src/toolcall_sft"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["training: end-to-end training smoke test; needs torch, skipped without it"]
 
 [tool.ruff]
 line-length = 120

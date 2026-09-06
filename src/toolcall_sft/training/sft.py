@@ -1,4 +1,4 @@
-"""LoRA / QLoRA supervised fine-tuning on chat-template-exact examples.
+"""LoRA / QLoRA supervised fine-tuning on chat-template-exact, per-turn examples.
 
 Runs on CUDA, Apple Silicon (MPS) and CPU. The differences between them are all
 resolved in one place, ``_resolve_device`` / ``_resolve_dtype``, because getting
@@ -8,12 +8,24 @@ quantization and the Liger kernels are CUDA-only, and ``TrainingArguments``'
 base model is instead loaded in bf16 directly and the LoRA parameters are kept in
 fp32, which is what keeps a 1.7B tune inside a laptop's memory without training
 the adapters in half precision.
+
+Every run leaves a record next to its checkpoints: ``config.yaml`` as given,
+``run.json`` with the resolved settings, dataset sizes, library versions and git
+state, and ``example.txt`` — one training example decoded token by token with the
+loss span marked. That last file is the thing to look at when a tune behaves
+strangely: it is exactly what the model was shown.
 """
 
+import json
 import logging
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Any
 
+import peft
 import torch
+import transformers
 from datasets import Dataset
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
@@ -27,9 +39,9 @@ from transformers import (
     TrainingArguments,
 )
 
-from ..config import ConfigError, ExperimentConfig
+from ..config import ConfigError, ExperimentConfig, flatten_for_logging
 from ..dataset import load_dialogues
-from ..masking import LABEL_IGNORE_INDEX, tokenize_dialogue
+from ..masking import LABEL_IGNORE_INDEX, MaskedExample, render_example, tokenize_dialogue
 from ..schema import DatasetError, Dialogue
 
 __all__ = ["run_sft"]
@@ -37,7 +49,7 @@ __all__ = ["run_sft"]
 logger = logging.getLogger(__name__)
 
 
-def run_sft(config: ExperimentConfig) -> Path:
+def run_sft(config: ExperimentConfig, *, config_path: Path | None = None) -> Path:
     """Train a LoRA adapter and return the directory it is saved to."""
     device = _resolve_device(config.training.device)
     dtype = _resolve_dtype(config.training.precision, device)
@@ -48,10 +60,27 @@ def run_sft(config: ExperimentConfig) -> Path:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    train_dataset = _build_dataset(tokenizer, load_dialogues(config.dataset.train_path), config, name="train")
-    eval_dataset = None
+    train_dialogues = load_dialogues(config.dataset.train_path)
+    train_examples = _tokenize(tokenizer, train_dialogues, config, name="train")
+    eval_examples: tuple[MaskedExample, ...] | None = None
+    eval_dialogues: tuple[Dialogue, ...] = ()
     if config.dataset.eval_path is not None:
-        eval_dataset = _build_dataset(tokenizer, load_dialogues(config.dataset.eval_path), config, name="eval")
+        eval_dialogues = load_dialogues(config.dataset.eval_path)
+        eval_examples = _tokenize(tokenizer, eval_dialogues, config, name="eval")
+
+    _write_run_record(
+        config,
+        config_path,
+        device=device,
+        dtype=dtype,
+        counts={
+            "train_dialogues": len(train_dialogues),
+            "train_examples": len(train_examples),
+            "eval_dialogues": len(eval_dialogues),
+            "eval_examples": len(eval_examples) if eval_examples is not None else 0,
+        },
+        example_text=render_example(tokenizer, train_examples[-1]),
+    )
 
     model = _load_model(config, dtype)
     if config.training.gradient_checkpointing:
@@ -72,6 +101,7 @@ def run_sft(config: ExperimentConfig) -> Path:
         num_train_epochs=config.training.epochs,
         learning_rate=config.training.learning_rate,
         per_device_train_batch_size=config.training.per_device_batch_size,
+        per_device_eval_batch_size=config.training.eval_batch_size,
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
         warmup_ratio=config.training.warmup_ratio,
         lr_scheduler_type=config.training.lr_scheduler,
@@ -82,7 +112,7 @@ def run_sft(config: ExperimentConfig) -> Path:
         dataloader_pin_memory=device == "cuda",
         gradient_checkpointing=config.training.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": False} if config.training.gradient_checkpointing else None,
-        eval_strategy="epoch" if eval_dataset is not None else "no",
+        eval_strategy="epoch" if eval_examples is not None else "no",
         save_strategy="epoch",
         # Fused linear cross-entropy: the loss never materializes the fp32 logits
         # tensor, which over a large vocabulary dominates memory at long context.
@@ -95,8 +125,8 @@ def run_sft(config: ExperimentConfig) -> Path:
     trainer = Trainer(
         model=peft_model,
         args=arguments,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        train_dataset=_to_dataset(train_examples),
+        eval_dataset=_to_dataset(eval_examples) if eval_examples is not None else None,
         processing_class=tokenizer,
         data_collator=DataCollatorForSeq2Seq(tokenizer, padding=True, label_pad_token_id=LABEL_IGNORE_INDEX),
     )
@@ -109,50 +139,64 @@ def run_sft(config: ExperimentConfig) -> Path:
     return adapter_dir
 
 
-def _build_dataset(
+def _tokenize(
     tokenizer: PreTrainedTokenizerBase,
     dialogues: tuple[Dialogue, ...],
     config: ExperimentConfig,
     *,
     name: str,
-) -> Dataset:
+) -> tuple[MaskedExample, ...]:
+    """Per-turn examples for every dialogue; refuses rather than drops when one does not fit.
+
+    A dialogue that exceeds ``max_seq_length`` is a dataset decision, not a training-time
+    accident: run ``tcsft filter`` (or raise the budget) so that what trains is what you
+    reviewed. Silently shrinking the eval set in particular would make its loss lie.
+    """
     max_seq_length = config.dataset.max_seq_length
-    rows: list[dict[str, list[int]]] = []
-    dropped = 0
+    examples: list[MaskedExample] = []
+    too_long: list[tuple[str, int]] = []
     for dialogue in dialogues:
-        example = tokenize_dialogue(tokenizer, dialogue)
-        if len(example.input_ids) > max_seq_length:
-            dropped += 1
+        turns = tokenize_dialogue(tokenizer, dialogue, chat_template_kwargs=config.dataset.chat_template_kwargs)
+        longest = max(len(example.input_ids) for example in turns)
+        if longest > max_seq_length:
+            too_long.append((dialogue.dialogue_id, longest))
             continue
-        rows.append(
-            {
-                "input_ids": list(example.input_ids),
-                "attention_mask": [1] * len(example.input_ids),
-                "labels": list(example.labels),
-            }
+        examples.extend(turns)
+    if too_long:
+        shown = ", ".join(f"{dialogue_id} ({tokens} tokens)" for dialogue_id, tokens in too_long[:5])
+        more = f" and {len(too_long) - 5} more" if len(too_long) > 5 else ""
+        raise DatasetError(
+            f"{name}: {len(too_long)} of {len(dialogues)} dialogues exceed max_seq_length={max_seq_length}: "
+            f"{shown}{more}. Run `tcsft filter --config <this config>` or raise dataset.max_seq_length."
         )
-    if dropped:
-        logger.warning(
-            "%s: dropped %d of %d dialogues longer than max_seq_length=%d",
-            name,
-            dropped,
-            len(dialogues),
-            max_seq_length,
-        )
-    if not rows:
-        raise DatasetError(f"{name}: every dialogue exceeded max_seq_length={max_seq_length}")
-    logger.info("%s: %d dialogues tokenized", name, len(rows))
+    logger.info("%s: %d dialogues -> %d examples (one per assistant turn)", name, len(dialogues), len(examples))
+    return tuple(examples)
+
+
+def _to_dataset(examples: tuple[MaskedExample, ...]) -> Dataset:
+    rows: list[dict[str, list[int]]] = [
+        {
+            "input_ids": list(example.input_ids),
+            "attention_mask": [1] * len(example.input_ids),
+            "labels": list(example.labels),
+        }
+        for example in examples
+    ]
     return Dataset.from_list(rows)
 
 
 def _resolve_device(requested: str) -> str:
-    if requested != "auto":
-        return requested
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    """The device to train on. A device that was asked for but is not there is an error, not a
+    fallback — the trainer would otherwise pick something else and the log would lie about it."""
+    cuda = torch.cuda.is_available()
+    mps = torch.backends.mps.is_available()
+    if requested == "auto":
+        return "cuda" if cuda else "mps" if mps else "cpu"
+    if requested == "cuda" and not cuda:
+        raise ConfigError("training.device is 'cuda' but no CUDA device is available; use 'auto' or another device")
+    if requested == "mps" and not mps:
+        raise ConfigError("training.device is 'mps' but the MPS backend is not available; use 'auto' or 'cpu'")
+    return requested
 
 
 def _resolve_dtype(precision: str, device: str) -> torch.dtype:
@@ -188,7 +232,13 @@ def _load_model(config: ExperimentConfig, dtype: torch.dtype) -> PreTrainedModel
         quantization_config=quantization_config,
     )
     if config.training.load_in_4bit:
-        model = prepare_model_for_kbit_training(model)
+        # peft would otherwise switch reentrant checkpointing on regardless of the config;
+        # keep one setting in charge and the same non-reentrant variant the trainer uses.
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=config.training.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+        )
     return model
 
 
@@ -200,3 +250,41 @@ def _lora_config(config: ExperimentConfig) -> LoraConfig:
         lora_dropout=config.lora.dropout,
         target_modules=list(config.lora.target_modules),
     )
+
+
+def _write_run_record(
+    config: ExperimentConfig,
+    config_path: Path | None,
+    *,
+    device: str,
+    dtype: torch.dtype,
+    counts: dict[str, int],
+    example_text: str,
+) -> None:
+    """Leave enough in output_dir to explain the run later, before anything can crash."""
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    if config_path is not None:
+        shutil.copyfile(config_path, config.output_dir / "config.yaml")
+    record: dict[str, Any] = {
+        "run_name": config.run_name,
+        "config": flatten_for_logging(config),
+        "resolved": {"device": device, "dtype": str(dtype).removeprefix("torch.")},
+        "dataset": counts,
+        "versions": {
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "peft": peft.__version__,
+        },
+        "git": _git_state(),
+    }
+    (config.output_dir / "run.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    (config.output_dir / "example.txt").write_text(example_text, encoding="utf-8")
+
+
+def _git_state() -> dict[str, Any]:
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+    return {"commit": commit.strip(), "dirty": bool(status.strip())}

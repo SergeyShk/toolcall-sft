@@ -1,19 +1,28 @@
 """Token-length statistics for a dataset under a specific base model's tokenizer.
 
-Answers the sizing questions before a training run: how long the dialogues are
-in the base model's tokens, what share of them actually carries loss
-(assistant tokens), and how many survive a given ``max_seq_length``. Uses the
-same tokenization-with-masks path as training, so the numbers match what the
-trainer will see.
+Answers the sizing questions before a training run: how long the examples are in
+the base model's tokens, what share of them actually carries loss, and how many
+dialogues survive a given ``max_seq_length``. Uses the same per-turn tokenization
+path as training, so the numbers match what the trainer will see.
+
+Three sizes matter per dialogue and they are different numbers:
+
+- ``longest_example`` — the last assistant turn's example, which carries the whole
+  conversation as its prompt. This is what has to fit ``max_seq_length``.
+- ``epoch_tokens`` — every example's length added up. Prefixes repeat across a
+  dialogue's turns, so this is what a pass over the data costs.
+- ``trained_tokens`` — target tokens across all examples. This is the signal.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-from transformers import PreTrainedTokenizerBase
-
-from .masking import LABEL_IGNORE_INDEX, TemplateCompatibilityError, tokenize_dialogue
+from .masking import TemplateCompatibilityError, tokenize_dialogue
 from .schema import Dialogue
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 __all__ = [
     "DEFAULT_MAX_SEQ_LENGTH",
@@ -29,9 +38,9 @@ __all__ = [
     "threshold_fits",
 ]
 
-# The example scenario's dialogues land around 500-900 tokens: a ~150-token system
-# prompt, ~250 tokens of tool schemas, the rest conversation. 2048 leaves room for
-# longer branches while keeping activations small enough to train on a laptop.
+# The example scenario's longest examples land around 500-900 tokens: a ~150-token
+# system prompt, ~250 tokens of tool schemas, the rest conversation. 2048 leaves room
+# for longer branches while keeping activations small enough to train on a laptop.
 # Retarget this together with dataset.max_seq_length when you bring your own data.
 DEFAULT_MAX_SEQ_LENGTH = 2048
 DEFAULT_THRESHOLDS = (1024, DEFAULT_MAX_SEQ_LENGTH, 4096, 8192)
@@ -41,7 +50,9 @@ HISTOGRAM_EDGES = (256, 512, 1024, 2048, 4096)
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DialogueTokenCount:
     dialogue_id: str
-    total_tokens: int
+    examples: int
+    longest_example: int
+    epoch_tokens: int
     trained_tokens: int
 
 
@@ -51,22 +62,33 @@ class TokenStatsReport:
     failures: tuple[tuple[str, str], ...]
 
 
-def _count_tokens(tokenizer: PreTrainedTokenizerBase, dialogue: Dialogue) -> DialogueTokenCount:
+def _count_tokens(
+    tokenizer: "PreTrainedTokenizerBase",
+    dialogue: Dialogue,
+    chat_template_kwargs: Mapping[str, Any] | None,
+) -> DialogueTokenCount:
     """Token accounting for one dialogue; raises TemplateCompatibilityError like training would."""
-    example = tokenize_dialogue(tokenizer, dialogue)
+    examples = tokenize_dialogue(tokenizer, dialogue, chat_template_kwargs=chat_template_kwargs)
     return DialogueTokenCount(
         dialogue_id=dialogue.dialogue_id,
-        total_tokens=len(example.input_ids),
-        trained_tokens=sum(1 for label in example.labels if label != LABEL_IGNORE_INDEX),
+        examples=len(examples),
+        longest_example=max(len(example.input_ids) for example in examples),
+        epoch_tokens=sum(len(example.input_ids) for example in examples),
+        trained_tokens=sum(example.target_tokens for example in examples),
     )
 
 
-def compute_token_stats(tokenizer: PreTrainedTokenizerBase, dialogues: Sequence[Dialogue]) -> TokenStatsReport:
+def compute_token_stats(
+    tokenizer: "PreTrainedTokenizerBase",
+    dialogues: Sequence[Dialogue],
+    *,
+    chat_template_kwargs: Mapping[str, Any] | None = None,
+) -> TokenStatsReport:
     counts: list[DialogueTokenCount] = []
     failures: list[tuple[str, str]] = []
     for dialogue in dialogues:
         try:
-            counts.append(_count_tokens(tokenizer, dialogue))
+            counts.append(_count_tokens(tokenizer, dialogue, chat_template_kwargs))
         except TemplateCompatibilityError as error:
             failures.append((dialogue.dialogue_id, str(error)))
     return TokenStatsReport(counts=tuple(counts), failures=tuple(failures))
@@ -80,16 +102,17 @@ class LengthFilterResult:
 
 
 def filter_by_length(
-    tokenizer: PreTrainedTokenizerBase,
+    tokenizer: "PreTrainedTokenizerBase",
     dialogues: Sequence[Dialogue],
     *,
     max_seq_length: int,
+    chat_template_kwargs: Mapping[str, Any] | None = None,
 ) -> LengthFilterResult:
-    """Partition dialogues by whether they fit ``max_seq_length`` in the base model's tokens.
+    """Partition dialogues by whether their longest example fits ``max_seq_length``.
 
     Uses the same tokenization-with-masks path as training, so a kept dialogue is
-    exactly one the trainer will accept instead of silently dropping. Dialogues that
-    fail to tokenize land in ``failures`` — they cannot train either.
+    exactly one the trainer will accept. Dialogues that fail to tokenize land in
+    ``failures`` — they cannot train either.
     """
     if max_seq_length < 1:
         raise ValueError(f"max_seq_length must be >= 1, got {max_seq_length}")
@@ -98,11 +121,11 @@ def filter_by_length(
     failures: list[tuple[str, str]] = []
     for dialogue in dialogues:
         try:
-            count = _count_tokens(tokenizer, dialogue)
+            count = _count_tokens(tokenizer, dialogue, chat_template_kwargs)
         except TemplateCompatibilityError as error:
             failures.append((dialogue.dialogue_id, str(error)))
             continue
-        if count.total_tokens <= max_seq_length:
+        if count.longest_example <= max_seq_length:
             kept.append(dialogue)
         else:
             dropped.append(count)
