@@ -19,10 +19,10 @@ RAW_DIALOGUE: dict[str, Any] = {
     "dialogue_id": "d1",
     "messages": [
         {"role": "system", "content": "You are a payment assistant."},
-        {"role": "user", "content": "Pay £100 to John"},
+        {"role": "user", "content": "Pay $100 to John"},
         {"role": "assistant", "content": "", "tool_calls": [{"name": "get_payees", "arguments": {"query": "John"}}]},
         {"role": "tool", "content": '[{"payee_id": "p1", "name": "John Smith"}]'},
-        {"role": "assistant", "content": "Found John Smith - confirm £100?"},
+        {"role": "assistant", "content": "Found John Smith - confirm $100?"},
     ],
     "tools": [{"type": "function", "function": {"name": "get_payees"}}],
 }
@@ -81,7 +81,7 @@ def test_content_fingerprint_ignores_id_and_whitespace() -> None:
     first = dialogue_from_json(RAW_DIALOGUE)
     raw = copy.deepcopy(RAW_DIALOGUE)
     raw["dialogue_id"] = "d2"
-    raw["messages"][1]["content"] = "Pay  £100   to John"
+    raw["messages"][1]["content"] = "Pay  $100   to John"
     second = dialogue_from_json(raw)
 
     assert content_fingerprint(first) == content_fingerprint(second)
@@ -99,7 +99,7 @@ def test_content_fingerprint_differs_on_tools_change() -> None:
 def test_content_fingerprint_differs_on_content_change() -> None:
     first = dialogue_from_json(RAW_DIALOGUE)
     raw = copy.deepcopy(RAW_DIALOGUE)
-    raw["messages"][1]["content"] = "Pay £200 to John"
+    raw["messages"][1]["content"] = "Pay $200 to John"
     second = dialogue_from_json(raw)
 
     assert content_fingerprint(first) != content_fingerprint(second)

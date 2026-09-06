@@ -19,8 +19,8 @@ What the model actually learns from is assistant tokens — everything else is m
 `tcsft stats` reports the share:
 
 ```
-total tokens:   min 529  p50 707  p90 740  max 759
-trained tokens: min 24  p50 106  p90 124  max 136  (12.4% of total)
+total tokens:   min 728  p50 880  p90 905  max 923
+trained tokens: min 38  p50 110  p90 125  max 136  (10.1% of total)
 ```
 
 1000 dialogues at ~100 trained tokens is ~100K tokens of signal. That is enough for LoRA at r=16 on
@@ -38,22 +38,27 @@ longer tail of "the tool must not fire" cases.
 
 | Branch | Share | Reaches the write tool |
 |---|---:|---|
-| `happy_path` — payee and amount given, confirm, send | 35% | yes |
-| `missing_amount` — one field missing, ask, then send | 15% | yes |
-| `out_of_scope` — request the assistant must decline | 14% | no |
+| `happy_path` — payee and amount given, confirm, send | 30% | yes |
+| `out_of_scope` — off-topic, leaves through `escalate` | 16% | no |
+| `missing_amount` — one field missing, ask, then send | 13% | yes |
 | `ambiguous_payee` — two matches, ask which | 12% | no |
-| `payee_not_found` — lookup returns nothing | 8% | no |
-| `insufficient_funds` — a precondition fails | 8% | no |
-| `cancelled` — user changes their mind mid-flow | 8% | no |
+| `payee_not_found` — lookup returns nothing | 11% | no |
+| `cancelled` — user changes their mind mid-flow | 10% | no |
+| `payment_declined` — the write is refused | 8% | yes |
 
-Two rules do the real work:
+Three rules do the real work:
 
 - **Cap the happy path at 40-50%.** Production data skews towards it far harder than this, because
   the messy conversations are the ones that got escalated or abandoned. Left uncorrected, the model
   learns that the write tool is the answer to everything.
-- **Negative examples are 10-15% minimum**, and here they are half the corpus. A refusal, a
+- **Negative examples are 10-15% minimum**, and here they are about half the corpus. A refusal, a
   clarifying question with no tool call, an action that must not happen — these are the only
   examples that teach *restraint*, and restraint is what makes a tool-calling model safe to deploy.
+- **Give the model somewhere to go.** `out_of_scope` is the largest single non-happy branch because
+  a narrow model with no exit will answer anything. An escape hatch works only if it is a tool call
+  the model was trained to make; a prompt instruction alone does not survive fine-tuning on data
+  that never demonstrates it. `payment_declined` is the same idea applied to the write path: a tool
+  can come back refused, and the model has to say so instead of reporting the success it expected.
 
 Production usually cannot supply the rare branches in useful numbers. Top them up synthetically:
 that is what `tcsft generate` demonstrates, and what a simulator against your real tools does
@@ -85,6 +90,8 @@ different training prompt, so it is a different example.
    the same tokenization path training uses, so what survives is exactly what the trainer accepts.
 6. `tcsft split`, then train.
 
-Replace [scenario.py](../src/toolcall_sft/scenario.py) with your own prompt and tools. Keeping both
-in one module is what stops the training copy and the serving copy from drifting apart — the failure
-mode that degrades a tuned model faster than anything else.
+Replace [scenario.py](../src/toolcall_sft/scenario.py) and
+[system_prompt.txt](../src/toolcall_sft/system_prompt.txt) with your own toolset and prompt. Keeping
+them together, and serving exactly what they contain, is what stops the training copy and the
+serving copy from drifting apart — the failure mode that degrades a tuned model faster than anything
+else.

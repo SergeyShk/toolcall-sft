@@ -37,7 +37,7 @@ def test_compare_tool_calls_exact_pairing_wins_over_name_only() -> None:
 
 def test_compare_tool_calls_missing_and_extra() -> None:
     expected = [_call("get_payees", query="John"), _call("create_payment", amount="100")]
-    predicted = [_call("get_payees", query="John"), _call("get_balance")]
+    predicted = [_call("get_payees", query="John"), _call("escalate")]
 
     result = compare_tool_calls(expected, predicted)
 

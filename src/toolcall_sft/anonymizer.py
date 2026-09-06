@@ -2,9 +2,11 @@
 
 Three sources of sensitive terms:
 
-- regex detectors for structured identifiers (emails, phone numbers, IBANs,
-  card numbers, sort codes, 8-digit account numbers, UK postcodes, UK VAT
-  numbers, UUIDs, ObjectIds);
+- regex detectors for structured identifiers (emails, international phone
+  numbers, IBANs, card numbers, 8-digit account numbers, UUIDs, ObjectIds).
+  These are deliberately region-neutral. Locally-shaped identifiers — national
+  ids, tax numbers, postal codes, domestic bank codes — differ per country and
+  are yours to add; they are exactly what a generic list misses;
 - values harvested from tool payloads under name-like keys — payee and
   account-holder names travel through tool results into replies, so the tool
   payloads know exactly which names to scrub. Harvesting is regex-based on the
@@ -13,9 +15,9 @@ Three sources of sensitive terms:
   name labels become global name terms, date-of-birth and address values
   are replaced in place.
 
-Financial fields (sort code, account number, IBAN, BIC) are additionally
-replaced by key wherever ``"key": "value"`` appears in a payload, regardless
-of the value's format — a sort code without dashes still gets scrubbed.
+Financial fields (account number, IBAN, BIC) are additionally replaced by key
+wherever ``"key": "value"`` appears in a payload, regardless of the value's
+format — an account number written without separators still gets scrubbed.
 
 Each text is scrubbed in a single pass: candidate spans are claimed over the
 original text in priority order — key-driven financial values and protected
@@ -70,7 +72,6 @@ _HARVEST_KEYS = frozenset(
 )  # fmt: skip
 
 _FINANCIAL_KEYS: Mapping[str, str] = {
-    "sort_code": "sort_code",
     "account_number": "account_number",
     "iban": "iban",
     "bic_swift": "bic",
@@ -81,20 +82,20 @@ _FINANCIAL_KEYS: Mapping[str, str] = {
 _SKIP_VALUES = frozenset({"-", "n/a", "none", "not set", "unknown", "null", "true", "false"})
 
 # Keys whose numeric values are money, not identifiers — protected from the digit detectors.
-_PROTECTED_KEYS = re.compile(r"amount|price|total|balance|fee|pennies")
+_PROTECTED_KEYS = re.compile(r"amount|price|total|balance|fee|cents|minor_units")
 
 _DETECTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("iban", re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")),
-    ("vat_number", re.compile(r"\bGB\d{9}\b")),
     ("uuid", re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")),
     ("object_id", re.compile(r"\b[0-9a-f]{24}\b")),
-    ("phone", re.compile(r"(?:\+44\s?7\d{3}|\b07\d{3})\s?\d{3}\s?\d{3}\b")),
+    # International form only: a leading + and 8-15 digits, spaces or hyphens
+    # between them. Dots are excluded on purpose so a decimal amount cannot look
+    # like a phone number. Domestic formats are region-specific — add your own.
+    ("phone", re.compile(r"\+(?:\d[\s\-]?){7,14}\d\b")),
     # Digit runs adjacent to a dot are decimal amounts, not card/account identifiers.
     ("card_number", re.compile(r"(?<![\d.])\d{13,19}(?![\d.])")),
-    ("sort_code", re.compile(r"\b\d{2}-\d{2}-\d{2}\b")),
     ("account_number", re.compile(r"(?<![\d.])\d{8}(?![\d.])")),
-    ("postcode", re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b")),
 )
 
 _KEY_VALUE = re.compile(r'"(?P<key>[a-z_]+)"(?P<sep>\s*:\s*)"(?P<value>[^"]{2,120})"')
@@ -246,30 +247,21 @@ class Anonymizer:
             case "email":
                 return f"{first.lower()}.{last.lower()}.{digest[:4]}@example.com"
             case "phone":
-                # Ofcom-reserved fictional mobile range 07700 900000-900999.
-                return f"+44 7700 900{number % 1000:03d}"
-            case "sort_code":
-                return f"00-00-{number % 100:02d}" if "-" in original else f"{number % 1_000_000:06d}"
+                # Country code 99 is unassigned, so this can never be a real number.
+                return f"+99 900 {number % 1_000_000:06d}"
             case "account_number":
                 return f"{number % 100_000_000:08d}"
             case "card_number":
                 return f"4111{number % 10**12:012d}"
             case "iban":
-                return f"GB00TEST{number % 10**14:014d}"
+                # XX is in the ISO 3166 user-assigned range: never a real country.
+                return f"XX00TEST{number % 10**14:014d}"
             case "bic":
-                return f"TESTGB{digest[:2].upper()}"
-            case "vat_number":
-                return f"GB{number % 10**9:09d}"
-            case "postcode":
-                letters = "ABCDEFGHJKLMNPRSTUVWXY"
-                return (
-                    f"{letters[number % 22]}{letters[(number // 22) % 22]}{number % 10} "
-                    f"{(number // 10) % 10}{letters[(number // 484) % 22]}{letters[(number // 10648) % 22]}"
-                )
+                return f"TESTXX{digest[:2].upper()}"
             case "date_of_birth":
                 return f"{1 + number % 28} January 199{number % 10}"
             case "address":
-                return f"{1 + number % 99} Example Street, London"
+                return f"{1 + number % 99} Example Street"
             case "uuid":
                 return f"{digest[0:8]}-{digest[8:12]}-4{digest[13:16]}-a{digest[17:20]}-{digest[20:32]}"
             case "object_id":

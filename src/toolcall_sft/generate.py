@@ -7,11 +7,13 @@ a model the shapes its templates already contain. Point the pipeline at your
 own dialogues as soon as you have them; the schema is the same.
 
 What the generator does take seriously is *branch balance*, which is the part
-people get wrong with real data too. Half the dialogues end in a
+people get wrong with real data too. About half the dialogues reach a
 ``create_payment`` and half deliberately do not: an ambiguous name, a payee
-that is not saved, a balance that is too low, a customer who changes their
-mind, a request that is out of scope. A model trained only on the happy path
-learns that the write tool is the answer to everything.
+that is not saved, a customer who changes their mind, a request that has to
+leave through ``escalate``. A model trained only on the happy path learns that
+the write tool is the answer to everything — and one never shown a refusal
+learns to report success it did not get, which is why ``payment_declined``
+fires the write tool and then has to admit it failed.
 
 Generation is deterministic in ``seed``: the same seed yields the same corpus,
 and dialogues are deduplicated by content fingerprint as they are built, so a
@@ -35,16 +37,16 @@ class GenerationError(Exception):
     """The generator could not produce the requested number of distinct dialogues."""
 
 
-# Half the corpus reaches a create_payment; the other half is the branches where
+# About half the corpus reaches create_payment; the rest is the branches where
 # calling it would be wrong. See the module docstring.
 BRANCH_WEIGHTS: Mapping[str, int] = {
-    "happy_path": 35,
-    "missing_amount": 15,
+    "happy_path": 30,
+    "out_of_scope": 16,
+    "missing_amount": 13,
     "ambiguous_payee": 12,
-    "payee_not_found": 8,
-    "insufficient_funds": 8,
-    "cancelled": 8,
-    "out_of_scope": 14,
+    "payee_not_found": 11,
+    "cancelled": 10,
+    "payment_declined": 8,
 }
 
 # Ten first names, each shared by two payees — that shared half is what makes the
@@ -63,17 +65,17 @@ _PEOPLE: tuple[tuple[str, str], ...] = (
 )  # fmt: skip
 
 _COMPANIES: tuple[str, ...] = (
-    "Beacon Supplies Ltd",
+    "Beacon Supplies",
     "Northgate Print",
-    "Harbour Coffee Co",
+    "Harbour Coffee",
     "Fenwick Logistics",
-    "Ridgeway Tools Ltd",
+    "Ridgeway Tools",
     "Clearwater Studio",
 )
 
 _AMOUNTS: tuple[float, ...] = (25.0, 40.0, 75.5, 99.99, 120.0, 175.0, 250.0, 320.4, 450.0, 600.0, 875.25, 1200.0)
-_CURRENCIES: tuple[tuple[str, int], ...] = (("GBP", 8), ("EUR", 1), ("USD", 1))
-_SYMBOLS: Mapping[str, str] = {"GBP": "£", "EUR": "€", "USD": "$"}
+_CURRENCIES: tuple[tuple[str, int], ...] = (("USD", 8), ("EUR", 1), ("CAD", 1))
+_SYMBOLS: Mapping[str, str] = {"USD": "$", "EUR": "€", "CAD": "CA$"}
 
 _REFERENCES: tuple[str, ...] = (
     "Invoice 2481",
@@ -84,13 +86,13 @@ _REFERENCES: tuple[str, ...] = (
     "Consulting fees",
 )
 
-# (topic phrasings, the decline). Kept wide on purpose: at 14% of the corpus this
-# pool has to supply more distinct dialogues than any single happy-path template,
-# and the generator refuses to repeat itself.
+# (topic phrasings, the reason to escalate with). Kept wide on purpose: at 16% of
+# the corpus this pool has to supply more distinct dialogues than any single
+# happy-path template, and the generator refuses to repeat itself.
 _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (
-        ("How much VAT do I owe this quarter?", "What's my VAT bill?", "When is my VAT return due?"),
-        "I can only send payments, so I can't help with VAT.",
+        ("How much tax do I owe this quarter?", "What's my tax bill?", "When is my tax return due?"),
+        "Customer is asking about their tax position, which I have no tool for.",
     ),
     (
         (
@@ -98,11 +100,11 @@ _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
             "My card is missing, please block it.",
             "I need to freeze my card.",
         ),
-        "I can only send payments — I can't do anything with cards.",
+        "Customer needs their card blocked — card actions are outside payments.",
     ),
     (
         ("Show me last month's transactions.", "Can I see my recent transactions?", "Pull up my statement for March."),
-        "I can only send payments, so I can't pull up your transactions.",
+        "Customer wants to see past transactions; I can only send new payments.",
     ),
     (
         (
@@ -110,31 +112,31 @@ _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
             "A payment failed last week — what happened?",
             "Can you check why a transfer bounced?",
         ),
-        "I can only send new payments, so I can't look into a past one.",
+        "Customer is asking why an earlier payment failed; I cannot look up past payments.",
     ),
     (
-        ("What's my account number?", "Can you tell me my sort code?", "I need my IBAN."),
-        "I can only send payments — I can't give out your account details.",
+        ("What's my account number?", "Where do I find my account details?", "Can you read me my account number?"),
+        "Customer is asking for their own account details, which I must not disclose.",
     ),
     (
-        ("I want to set up a direct debit.", "Can you create a standing order?", "Set up a recurring payment for me."),
-        "I can only send one-off payments, not set up recurring ones.",
+        ("I want to pay this every month.", "Can you make this payment repeat?", "Set up a recurring payment for me."),
+        "Customer wants a recurring payment; I can only send one-off payments.",
     ),
     (
         ("Add a new payee for me.", "Can you save a new supplier?", "I need to delete an old payee."),
-        "I can only send payments to payees that are already saved.",
+        "Customer wants to change their saved payee list, which I cannot edit.",
     ),
     (
         ("How do I close my account?", "I want to switch to a different plan.", "Can you upgrade my subscription?"),
-        "I can only send payments, so I can't change your account.",
+        "Customer wants to change their account or plan.",
     ),
     (
-        ("Can I get a loan?", "What's my overdraft limit?", "Do you offer business credit?"),
-        "I can only send payments — lending isn't something I can help with.",
+        ("Can I get a loan?", "What's my credit limit?", "Do you offer business credit?"),
+        "Customer is asking about lending, which is outside payments.",
     ),
     (
-        ("Send an invoice to my client.", "Can you chase an unpaid invoice?", "Create an invoice for £500."),
-        "I can only send payments, not create or chase invoices.",
+        ("Send an invoice to my client.", "Can you chase an unpaid invoice?", "Create an invoice for $500."),
+        "Customer wants an invoice created or chased; I only send payments.",
     ),
     (
         (
@@ -142,7 +144,7 @@ _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
             "There's a transaction I don't recognise.",
             "I've been scammed, what do I do?",
         ),
-        "That needs a human right away — I can only send payments.",
+        "Possible fraud on the account — needs a person now.",
     ),
     (
         (
@@ -150,48 +152,54 @@ _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
             "How much would $500 cost me?",
             "Do you charge a fee for international transfers?",
         ),
-        "I can only send payments, so I can't quote rates or fees.",
+        "Customer is asking about rates and fees, which I cannot quote.",
     ),
     (
         ("Can you change my address?", "Update my phone number please.", "I need to change my email."),
-        "I can only send payments — profile changes aren't something I can do.",
+        "Customer wants to update their profile details.",
     ),
     (
         ("The app keeps crashing when I open it.", "I can't log in on my phone.", "Why is the app so slow today?"),
-        "I can only send payments, so I can't help with app problems.",
+        "Customer is reporting a technical problem with the app.",
     ),
     (
         ("Put me through to a human.", "I want to speak to someone.", "This is useless, get me an agent."),
-        "I can only send payments — I can't transfer you to anyone.",
+        "Customer has asked to speak to a person.",
     ),
     (
         ("What's the weather like?", "Tell me a joke.", "Who won the match last night?"),
-        "I can only send payments, so I'm not much use there.",
+        "Off-topic request, unrelated to banking.",
     ),
     (
         ("How much money do I have?", "What's my balance right now?", "Am I in the red?"),
-        "I can only check a balance as part of sending a payment, not on its own.",
+        "Customer is asking for their balance, which I have no tool to read.",
     ),
     (
         ("Can you do my bookkeeping?", "Categorise my expenses for me.", "I need a profit and loss report."),
-        "I can only send payments, so bookkeeping is out of my reach.",
+        "Customer is asking for bookkeeping work.",
     ),
     (
         ("When will my salary land?", "Has my customer paid me yet?", "Any incoming transfers today?"),
-        "I can only send payments, so I can't see incoming ones.",
+        "Customer is asking about incoming payments, which I cannot see.",
     ),
     (
         ("Refund the payment I sent yesterday.", "Can you reverse a transfer?", "I need my money back."),
-        "I can only send payments — I can't reverse one that has gone out.",
+        "Customer wants a sent payment reversed, which I cannot do.",
     ),
 )
 
-_CLOSINGS: tuple[str, ...] = (
-    "Is there a payment I can send for you?",
-    "I can send a payment to a saved payee if that helps.",
-    "Let me know if you'd like to pay someone.",
-    "Happy to send a payment if you need one.",
-    "If you want to pay a saved payee, just say the word.",
+_HANDOFFS: tuple[str, ...] = (
+    "I've passed this to the team — they'll pick it up shortly.",
+    "I've handed this over to someone who can help.",
+    "That's with our team now; they'll come back to you.",
+    "I've passed it on — someone will be in touch.",
+    "Handed over to the team, they'll take it from here.",
+)
+
+_DECLINE_REASONS: tuple[tuple[str, str], ...] = (
+    ("insufficient_funds", "there isn't enough in the account"),
+    ("daily_limit_exceeded", "it goes over your daily limit"),
+    ("payee_blocked", "the payee is currently blocked"),
 )
 
 
@@ -287,18 +295,9 @@ def _happy_path(rng: random.Random) -> tuple[Message, ...]:
         arguments["reference"] = reference
     return (
         Message(role=Role.USER, content=ask),
-        _calls(ToolCall(name="find_payee", arguments={"name": payee.name})),
+        _calls(ToolCall(name="get_payees", arguments={"name": payee.name})),
         _result([payee.as_payload()]),
-        Message(
-            role=Role.ASSISTANT,
-            content=rng.choice(
-                (
-                    f"{payee.name}, account ending {payee.account_number[-4:]} — send {money}?",
-                    f"I found {payee.name} (account ending {payee.account_number[-4:]}). Send {money}?",
-                    f"Ready to send {money} to {payee.name}, account ending {payee.account_number[-4:]}. Confirm?",
-                )
-            ),
-        ),
+        Message(role=Role.ASSISTANT, content=_confirm(rng, payee, money)),
         Message(role=Role.USER, content=rng.choice(("Yes", "yes please", "Yep, go ahead", "Confirmed"))),
         _calls(ToolCall(name="create_payment", arguments=arguments)),
         _result({"payment_id": payee.payment_id, "status": "sent"}),
@@ -331,7 +330,7 @@ def _missing_amount(rng: random.Random) -> tuple[Message, ...]:
                 )
             ),
         ),
-        _calls(ToolCall(name="find_payee", arguments={"name": payee.name})),
+        _calls(ToolCall(name="get_payees", arguments={"name": payee.name})),
         _result([payee.as_payload()]),
         Message(
             role=Role.ASSISTANT,
@@ -356,6 +355,42 @@ def _missing_amount(rng: random.Random) -> tuple[Message, ...]:
     )
 
 
+def _payment_declined(rng: random.Random) -> tuple[Message, ...]:
+    """The write tool fires and comes back refused — the model must not claim success."""
+    payee = _payee(rng)
+    amount = rng.choice((1200.0, 1750.0, 2400.0, 3100.0))
+    currency = _currency(rng)
+    money = _money(amount, currency)
+    code, explanation = rng.choice(_DECLINE_REASONS)
+    return (
+        Message(
+            role=Role.USER,
+            content=rng.choice((f"Send {money} to {payee.name}", f"Pay {payee.name} {money} today")),
+        ),
+        _calls(ToolCall(name="get_payees", arguments={"name": payee.name})),
+        _result([payee.as_payload()]),
+        Message(role=Role.ASSISTANT, content=_confirm(rng, payee, money)),
+        Message(role=Role.USER, content=rng.choice(("Yes", "Go ahead", "Confirmed"))),
+        _calls(
+            ToolCall(
+                name="create_payment",
+                arguments={"payee_id": payee.payee_id, "amount": amount, "currency": currency},
+            )
+        ),
+        _result({"status": "declined", "reason": code}),
+        Message(
+            role=Role.ASSISTANT,
+            content=rng.choice(
+                (
+                    f"That didn't go through — {explanation}. Would you like to try a different amount?",
+                    f"The payment was declined because {explanation}. Shall I try something smaller?",
+                    f"It was refused — {explanation}. Nothing has left your account.",
+                )
+            ),
+        ),
+    )
+
+
 def _ambiguous_payee(rng: random.Random) -> tuple[Message, ...]:
     first, one, two = _namesakes(rng)
     amount = rng.choice(_AMOUNTS)
@@ -366,7 +401,7 @@ def _ambiguous_payee(rng: random.Random) -> tuple[Message, ...]:
             role=Role.USER,
             content=rng.choice((f"Pay {first} {money}", f"Send {money} to {first}", f"{money} to {first} please")),
         ),
-        _calls(ToolCall(name="find_payee", arguments={"name": first})),
+        _calls(ToolCall(name="get_payees", arguments={"name": first})),
         _result([one.as_payload(), two.as_payload()]),
         Message(
             role=Role.ASSISTANT,
@@ -383,14 +418,13 @@ def _ambiguous_payee(rng: random.Random) -> tuple[Message, ...]:
 
 def _payee_not_found(rng: random.Random) -> tuple[Message, ...]:
     payee = _payee(rng)
-    amount = rng.choice(_AMOUNTS)
-    money = _money(amount, _currency(rng))
+    money = _money(rng.choice(_AMOUNTS), _currency(rng))
     return (
         Message(
             role=Role.USER,
             content=rng.choice((f"Send {money} to {payee.name}", f"Pay {payee.name} {money}")),
         ),
-        _calls(ToolCall(name="find_payee", arguments={"name": payee.name})),
+        _calls(ToolCall(name="get_payees", arguments={"name": payee.name})),
         _result([]),
         Message(
             role=Role.ASSISTANT,
@@ -399,33 +433,6 @@ def _payee_not_found(rng: random.Random) -> tuple[Message, ...]:
                     f"I couldn't find {payee.name} in your saved payees. Can you check the spelling?",
                     f"No saved payee matches {payee.name}. Is it saved under a different name?",
                     f"{payee.name} isn't in your payee list. What name is the account saved under?",
-                )
-            ),
-        ),
-    )
-
-
-def _insufficient_funds(rng: random.Random) -> tuple[Message, ...]:
-    payee = _payee(rng)
-    amount = rng.choice((1200.0, 1750.0, 2400.0, 3100.0))
-    balance = round(amount * rng.uniform(0.2, 0.8), 2)
-    money = _money(amount, "GBP")
-    return (
-        Message(
-            role=Role.USER,
-            content=rng.choice((f"Send {money} to {payee.name}", f"Pay {payee.name} {money} today")),
-        ),
-        _calls(ToolCall(name="find_payee", arguments={"name": payee.name})),
-        _result([payee.as_payload()]),
-        _calls(ToolCall(name="get_balance", arguments={})),
-        _result({"balance": balance, "currency": "GBP"}),
-        Message(
-            role=Role.ASSISTANT,
-            content=rng.choice(
-                (
-                    f"Your balance is {_money(balance, 'GBP')}, which isn't enough for {money}. "
-                    "Would you like to send a smaller amount?",
-                    f"You have {_money(balance, 'GBP')} available — {money} won't go through. Shall I send less?",
                 )
             ),
         ),
@@ -442,12 +449,9 @@ def _cancelled(rng: random.Random) -> tuple[Message, ...]:
             role=Role.USER,
             content=rng.choice((f"Pay {payee.name} {money}", f"Send {money} to {payee.name}")),
         ),
-        _calls(ToolCall(name="find_payee", arguments={"name": payee.name})),
+        _calls(ToolCall(name="get_payees", arguments={"name": payee.name})),
         _result([payee.as_payload()]),
-        Message(
-            role=Role.ASSISTANT,
-            content=f"{payee.name}, account ending {payee.account_number[-4:]} — send {money}?",
-        ),
+        Message(role=Role.ASSISTANT, content=_confirm(rng, payee, money)),
         Message(
             role=Role.USER,
             content=rng.choice(
@@ -473,21 +477,25 @@ def _cancelled(rng: random.Random) -> tuple[Message, ...]:
 
 
 def _out_of_scope(rng: random.Random) -> tuple[Message, ...]:
-    phrasings, decline = rng.choice(_OUT_OF_SCOPE)
+    """Everything the assistant cannot do leaves through escalate, never through an improvised answer."""
+    phrasings, reason = rng.choice(_OUT_OF_SCOPE)
+    ticket = f"esc_{hashlib.sha256(reason.encode()).hexdigest()[:8]}"
     return (
         Message(role=Role.USER, content=rng.choice(phrasings)),
-        Message(role=Role.ASSISTANT, content=f"{decline} {rng.choice(_CLOSINGS)}"),
+        _calls(ToolCall(name="escalate", arguments={"reason": reason})),
+        _result({"status": "escalated", "ticket_id": ticket}),
+        Message(role=Role.ASSISTANT, content=rng.choice(_HANDOFFS)),
     )
 
 
 _BUILDERS: Mapping[str, Callable[[random.Random], tuple[Message, ...]]] = {
     "happy_path": _happy_path,
+    "out_of_scope": _out_of_scope,
     "missing_amount": _missing_amount,
     "ambiguous_payee": _ambiguous_payee,
     "payee_not_found": _payee_not_found,
-    "insufficient_funds": _insufficient_funds,
     "cancelled": _cancelled,
-    "out_of_scope": _out_of_scope,
+    "payment_declined": _payment_declined,
 }
 
 
@@ -533,6 +541,17 @@ def _currency(rng: random.Random) -> str:
 
 def _money(amount: float, currency: str) -> str:
     return f"{_SYMBOLS[currency]}{amount:,.2f}"
+
+
+def _confirm(rng: random.Random, payee: "_Payee", money: str) -> str:
+    """The read-back the prompt requires before create_payment may fire."""
+    return rng.choice(
+        (
+            f"{payee.name}, account ending {payee.account_number[-4:]} — send {money}?",
+            f"I found {payee.name} (account ending {payee.account_number[-4:]}). Send {money}?",
+            f"Ready to send {money} to {payee.name}, account ending {payee.account_number[-4:]}. Confirm?",
+        )
+    )
 
 
 def _calls(*tool_calls: ToolCall) -> Message:

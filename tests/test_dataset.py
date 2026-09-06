@@ -140,7 +140,7 @@ def test_dataset_stats_counts_tool_calls() -> None:
     dialogue = Dialogue(
         dialogue_id="d1",
         messages=(
-            Message(role=Role.USER, content="Pay £100 to John"),
+            Message(role=Role.USER, content="Pay $100 to John"),
             Message(role=Role.ASSISTANT, content="", tool_calls=(ToolCall(name="get_payees", arguments={}),)),
             Message(role=Role.TOOL, content="[]"),
             Message(role=Role.ASSISTANT, content="No payee found"),

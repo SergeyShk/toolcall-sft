@@ -5,15 +5,15 @@ def _payment_dialogue() -> Dialogue:
     return Dialogue(
         dialogue_id="tr-1",
         messages=(
-            Message(role=Role.SYSTEM, content="Customer email: john.smith@acme.co.uk, phone 07700 123456."),
-            Message(role=Role.USER, content="Pay £100 to John Smith, sort code 12-34-56, account 12345678"),
+            Message(role=Role.SYSTEM, content="Customer email: john.smith@acme.example, phone +49 151 2345678."),
+            Message(role=Role.USER, content="Pay $100 to John Smith, IBAN DE89370400440532013000, account 12345678"),
             Message(
                 role=Role.ASSISTANT,
                 content="",
                 tool_calls=(ToolCall(name="get_payees", arguments={"payee_name": "John Smith"}),),
             ),
             Message(role=Role.TOOL, content='[{"payee_id": "p1", "name": "John Smith"}]'),
-            Message(role=Role.ASSISTANT, content="I found JOHN SMITH — confirm £100?"),
+            Message(role=Role.ASSISTANT, content="I found JOHN SMITH — confirm $100?"),
         ),
     )
 
@@ -23,12 +23,12 @@ def test_anonymize_replaces_structured_identifiers() -> None:
 
     system = anonymized.messages[0].content
     user = anonymized.messages[1].content
-    assert "john.smith@acme.co.uk" not in system
+    assert "john.smith@acme.example" not in system
     assert "@example.com" in system
-    assert "07700 123456" not in system
-    assert "12-34-56" not in user
+    assert "+49 151 2345678" not in system
+    assert "DE89370400440532013000" not in user
     assert "12345678" not in user
-    assert "£100" in user
+    assert "$100" in user  # amounts carry the scenario's meaning and are kept
     assert report.total > 0
 
 
@@ -62,15 +62,15 @@ def test_anonymize_extra_terms_are_redacted() -> None:
     dialogue = Dialogue(
         dialogue_id="tr-1",
         messages=(
-            Message(role=Role.USER, content="This is Acme Widgets Ltd speaking"),
-            Message(role=Role.ASSISTANT, content="Hello Acme Widgets Ltd!"),
+            Message(role=Role.USER, content="This is Acme Widgets speaking"),
+            Message(role=Role.ASSISTANT, content="Hello Acme Widgets!"),
         ),
     )
 
-    anonymized, report = Anonymizer(salt="v1", extra_terms=("Acme Widgets Ltd",)).anonymize_dialogue(dialogue)
+    anonymized, report = Anonymizer(salt="v1", extra_terms=("Acme Widgets",)).anonymize_dialogue(dialogue)
 
-    assert "Acme Widgets Ltd" not in anonymized.messages[0].content
-    assert "Acme Widgets Ltd" not in anonymized.messages[1].content
+    assert "Acme Widgets" not in anonymized.messages[0].content
+    assert "Acme Widgets" not in anonymized.messages[1].content
     assert report.total == 2
 
 
@@ -87,10 +87,10 @@ def test_anonymize_harvests_from_payload_with_trailing_garbage() -> None:
             Message(
                 role=Role.TOOL,
                 content=(
-                    '{\n  "account_name": "Starbridge Group Limited",\n  "sort_code": "400627"\n}\nBanner: check limits'
+                    '{\n  "account_name": "Starbridge Group",\n  "account_number": "40062700"\n}\nBanner: check limits'
                 ),
             ),
-            Message(role=Role.ASSISTANT, content="Draft for Starbridge Group Limited created"),
+            Message(role=Role.ASSISTANT, content="Draft for Starbridge Group created"),
         ),
     )
 
@@ -98,7 +98,7 @@ def test_anonymize_harvests_from_payload_with_trailing_garbage() -> None:
 
     assert "Starbridge" not in anonymized.messages[2].content
     assert "Starbridge" not in anonymized.messages[3].content
-    assert "400627" not in anonymized.messages[2].content
+    assert "40062700" not in anonymized.messages[2].content
 
 
 def test_anonymize_replaces_financial_fields_by_key_in_arguments() -> None:
@@ -111,8 +111,12 @@ def test_anonymize_replaces_financial_fields_by_key_in_arguments() -> None:
                 content="",
                 tool_calls=(
                     ToolCall(
-                        name="create_payment_draft",
-                        arguments={"sort_code": "400627", "account_number": "81544756", "amount": "100.00"},
+                        name="create_payment",
+                        arguments={
+                            "iban": "DE89370400440532013000",
+                            "account_number": "81544756",
+                            "amount": "100.00",
+                        },
                     ),
                 ),
             ),
@@ -124,13 +128,12 @@ def test_anonymize_replaces_financial_fields_by_key_in_arguments() -> None:
     anonymized, _report = Anonymizer(salt="v1").anonymize_dialogue(dialogue)
 
     arguments = anonymized.messages[1].tool_calls[0].arguments
-    assert arguments["sort_code"] != "400627"
-    assert len(arguments["sort_code"]) == 6
+    assert arguments["iban"] != "DE89370400440532013000"
     assert arguments["account_number"] != "81544756"
     assert arguments["amount"] == "100.00"
 
 
-def test_anonymize_scrubs_customer_profile_block() -> None:
+def test_anonymize_scrubs_profile_block() -> None:
     system = (
         "You are a payment assistant.\n"
         "Customer Profile\n"
@@ -160,21 +163,38 @@ def test_anonymize_scrubs_customer_profile_block() -> None:
     assert "Ivan" not in anonymized.messages[2].content
 
 
-def test_anonymize_detects_vat_and_postcode() -> None:
+def test_anonymize_detects_international_phone_and_iban() -> None:
+    """The structured detectors are region-neutral: an international phone form and
+    the ISO IBAN shape, not any one country's domestic formats."""
     dialogue = Dialogue(
         dialogue_id="tr-1",
         messages=(
-            Message(role=Role.USER, content="Invoice from GB123456789, office at SW1A 1AA"),
+            Message(role=Role.USER, content="Call me on +33 6 12 34 56 78, pay to FR7630006000011234567890189"),
             Message(role=Role.ASSISTANT, content="Noted"),
         ),
     )
 
     anonymized, report = Anonymizer(salt="v1").anonymize_dialogue(dialogue)
 
-    assert "GB123456789" not in anonymized.messages[0].content
-    assert "SW1A 1AA" not in anonymized.messages[0].content
-    assert dict(report.replacements)["vat_number"] == 1
-    assert dict(report.replacements)["postcode"] == 1
+    assert "+33 6 12 34 56 78" not in anonymized.messages[0].content
+    assert "FR7630006000011234567890189" not in anonymized.messages[0].content
+    assert dict(report.replacements)["phone"] == 1
+    assert dict(report.replacements)["iban"] == 1
+
+
+def test_anonymize_does_not_mistake_a_signed_amount_for_a_phone_number() -> None:
+    """The phone detector excludes dots as separators so a decimal cannot match it."""
+    dialogue = Dialogue(
+        dialogue_id="tr-1",
+        messages=(
+            Message(role=Role.USER, content="Adjust the total by +12.50 and 30.00"),
+            Message(role=Role.ASSISTANT, content="Noted"),
+        ),
+    )
+
+    anonymized, _report = Anonymizer(salt="v1").anonymize_dialogue(dialogue)
+
+    assert anonymized.messages[0].content == "Adjust the total by +12.50 and 30.00"
 
 
 def test_anonymize_same_value_gets_same_fake_in_text_and_arguments() -> None:
@@ -247,7 +267,7 @@ def test_anonymize_leaves_amounts_untouched() -> None:
     dialogue = Dialogue(
         dialogue_id="tr-1",
         messages=(
-            Message(role=Role.USER, content="Pay the invoice, total 12345678.90 GBP"),
+            Message(role=Role.USER, content="Pay the invoice, total 12345678.90 USD"),
             Message(
                 role=Role.ASSISTANT,
                 content="",
@@ -257,7 +277,7 @@ def test_anonymize_leaves_amounts_untouched() -> None:
                 role=Role.TOOL,
                 content='{"amount": "12345678.90", "amount_pennies": "70200862", "account_number": "81544756"}',
             ),
-            Message(role=Role.ASSISTANT, content="Total is 12345678.90 GBP"),
+            Message(role=Role.ASSISTANT, content="Total is 12345678.90 USD"),
         ),
     )
 

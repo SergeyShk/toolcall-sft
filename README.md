@@ -83,26 +83,36 @@ The dialogues carry no reasoning content, so a Qwen3 tune must be served in non-
 
 ## The example scenario
 
-One system prompt of about 150 tokens and three tools — `find_payee`, `get_balance`,
-`create_payment` — all in [scenario.py](src/toolcall_sft/scenario.py). Three tools is enough to
-exercise what a tool-calling tune has to learn: a lookup whose result decides what happens next, a
-read only some branches need, and a write that must not fire without confirmation.
+Three tools, defined in [scenario.py](src/toolcall_sft/scenario.py), and a system prompt of about
+150 tokens kept in its own file, [system_prompt.txt](src/toolcall_sft/system_prompt.txt) — it is the
+thing you edit most, the thing worth diffing between two runs, and the thing the serving side has to
+receive verbatim.
 
-The generator covers seven branches, and **half of them deliberately never reach
-`create_payment`**:
+| Tool | Role in the tune |
+|---|---|
+| `get_payees(name)` | a lookup whose result decides what happens next: no match, one match, or several |
+| `create_payment(payee_id, amount, currency, reference?)` | a write that must not fire without confirmation, and that can come back declined |
+| `escalate(reason)` | the way out for everything the model cannot do |
 
-| Branch | Share | Ends in a payment |
+`escalate` carries more weight than it looks. Without a way out, a narrow model answers questions it
+has no business answering — so the exit has to be a tool call it was trained to make, not a hope
+that the prompt will hold.
+
+The generator covers seven branches, and **about half of them never reach `create_payment`**:
+
+| Branch | Share | Calls the write tool |
 |---|---:|---|
-| `happy_path` — named payee and amount, confirm, send | 35% | yes |
-| `missing_amount` — ask for the amount, then send | 15% | yes |
-| `out_of_scope` — request the assistant must decline | 14% | no |
+| `happy_path` — named payee and amount, confirm, send | 30% | yes |
+| `out_of_scope` — off-topic request, leaves through `escalate` | 16% | no |
+| `missing_amount` — ask for the amount, then send | 13% | yes |
 | `ambiguous_payee` — two namesakes, ask which | 12% | no |
-| `payee_not_found` — lookup returns nothing | 8% | no |
-| `insufficient_funds` — balance below the amount | 8% | no |
-| `cancelled` — customer changes their mind | 8% | no |
+| `payee_not_found` — lookup returns nothing | 11% | no |
+| `cancelled` — customer changes their mind | 10% | no |
+| `payment_declined` — the write is refused, and must be reported as refused | 8% | yes |
 
-That balance is the part people get wrong with real data too: a model trained only on the happy
-path learns that the write tool is the answer to everything.
+That balance is the part people get wrong with real data too. A model trained only on the happy
+path learns that the write tool is the answer to everything; one never shown a refusal learns to
+report a success it did not get.
 
 ## Dataset format
 
@@ -114,14 +124,34 @@ OpenAI-style nested form that chat templates expect.
   "dialogue_id": "happy_path-00001",
   "messages": [
     {"role": "system", "content": "You are a payment assistant..."},
-    {"role": "user", "content": "Send £450.00 to James Whitfield"},
-    {"role": "assistant", "content": "", "tool_calls": [{"name": "find_payee", "arguments": {"name": "James Whitfield"}}]},
+    {"role": "user", "content": "Send $450.00 to James Whitfield"},
+    {"role": "assistant", "content": "", "tool_calls": [{"name": "get_payees", "arguments": {"name": "James Whitfield"}}]},
     {"role": "tool", "content": "[{\"payee_id\": \"pay_1c9f\", \"name\": \"James Whitfield\"}]"},
-    {"role": "assistant", "content": "James Whitfield — send £450.00?"}
+    {"role": "assistant", "content": "James Whitfield — send $450.00?"}
   ],
-  "tools": [{"type": "function", "function": {"name": "find_payee", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}}}}]
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_payees",
+        "description": "Look up the customer's saved payees by name. Returns every match, so an empty list means the payee is not saved and more than one match has to be resolved with the customer before paying.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "name": {"type": "string", "description": "Full or partial payee name, as the customer said it."}
+          },
+          "required": ["name"]
+        }
+      }
+    }
+  ]
 }
 ```
+
+The `description` fields are not decoration and are not optional: the chat template renders them
+into the training prompt, so they are literally what the model reads to decide which tool to call
+and what to put in it. A toolset stripped of descriptions trains a different model than the one you
+will serve. One tool is shown here in full — the committed sample has all three.
 
 Validation enforces that a dialogue opens with `system`/`user`, ends with an `assistant` message
 (the training target), that only `assistant` messages carry `tool_calls`, and that every `tool`
@@ -147,11 +177,15 @@ else — training bakes data into weights:
 uv run tcsft anonymize data/raw.jsonl --out data/anon.jsonl --term "Some Name"
 ```
 
-It is deterministic pseudonymization: regex detectors for structured identifiers (emails, phones,
-IBANs, cards, sort codes, account numbers, postcodes, UUIDs) plus names harvested from tool payloads
-under name-like keys. The same original maps to the same fake everywhere, so an id passed from a
-tool result into a later tool call stays consistent. Amounts are kept — they carry the scenario's
-meaning.
+It is deterministic pseudonymization: regex detectors for structured identifiers (emails,
+international phone numbers, IBANs, card numbers, account numbers, UUIDs) plus names harvested from
+tool payloads under name-like keys. The same original maps to the same fake everywhere, so an id
+passed from a tool result into a later tool call stays consistent. Amounts are kept — they carry the
+scenario's meaning.
+
+The detectors are deliberately region-neutral. Locally-shaped identifiers — national ids, tax
+numbers, postal codes, domestic bank codes — differ per country and are yours to add; they are
+exactly what a generic list misses.
 
 It is a mechanical pass, not a guarantee: a free-text name that appears in no tool payload survives
 it. Review a sample, and feed known names in with `--term`. See
@@ -207,7 +241,7 @@ for them:
 2. `training.per_device_batch_size: 1`, raising `gradient_accumulation_steps` to keep the effective
    batch the same — already the case in the MPS config, so this one is for CUDA.
 3. Lower `dataset.max_seq_length` to what `tcsft stats` says you need — activation memory is linear
-   in it, and 2048 is already generous for the example scenario's ~760-token dialogues.
+   in it, and 2048 is already generous for the example scenario's ~880-token dialogues.
 4. A smaller base model. Qwen3-0.6B is roughly a third of 1.7B in both memory and time.
 
 On CUDA, `configs/cuda_qlora.yaml` adds 4-bit base weights and fused cross-entropy, which is what
@@ -227,7 +261,7 @@ Layout — `src/toolcall_sft/`:
 |---|---|
 | `schema` | the dialogue as the unit of training, dedup and splitting |
 | `dataset` | load/write JSONL, dedup, deterministic split |
-| `scenario` | the example prompt and toolset — replace this one |
+| `scenario` | the example toolset, and the loader for `system_prompt.txt` — replace these two |
 | `generate` | synthetic dialogues, branch-balanced |
 | `masking` | chat-template-exact tokenization, assistant-only loss |
 | `stats` | token-length statistics and the length filter |

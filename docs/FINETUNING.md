@@ -120,5 +120,5 @@ verify first when a tune "mysteriously" underperforms.
 5. **PII in the weights.** Not reversible after the fact.
 6. **Scenario drift.** Change the prompt or a tool schema and the tuned model degrades harder than a
    general one — it was trained on the old shape. Budget for periodic retraining from the start, and
-   keep the prompt and the toolset in one place (here, `scenario.py`) so the training and serving
-   copies cannot diverge.
+   keep the prompt and the toolset in one place (here, `scenario.py` and `system_prompt.txt`) so the
+   training and serving copies cannot diverge.

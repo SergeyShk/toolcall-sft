@@ -114,3 +114,26 @@ def test_exhausted_templates_raise_instead_of_returning_fewer() -> None:
 def test_count_must_be_positive() -> None:
     with pytest.raises(GenerationError, match="at least 1"):
         generate_dialogues(0)
+
+
+def test_out_of_scope_escalates_instead_of_answering() -> None:
+    """Without a way out, a narrow model answers questions it has no tool for."""
+    dialogues = [d for d in generate_dialogues(300, seed=6) if _branch_of(d) == "out_of_scope"]
+
+    assert dialogues
+    for dialogue in dialogues:
+        assert _calls(dialogue) == ["escalate"]
+        call = next(c for m in dialogue.messages for c in m.tool_calls)
+        assert call.arguments["reason"].strip()
+
+
+def test_declined_payment_is_never_reported_as_sent() -> None:
+    """The write tool fires and comes back refused; the closing turn has to say so."""
+    dialogues = [d for d in generate_dialogues(300, seed=6) if _branch_of(d) == "payment_declined"]
+
+    assert dialogues
+    for dialogue in dialogues:
+        assert "create_payment" in _calls(dialogue)
+        assert '"status": "declined"' in dialogue.messages[-2].content
+        closing = dialogue.messages[-1].content.lower()
+        assert "sent" not in closing and "done" not in closing
