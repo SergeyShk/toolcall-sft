@@ -4,8 +4,9 @@ Fine-tune a small local model to drive a multi-turn **tool-calling** conversatio
 tool, fill its arguments from what the user said and what earlier tools returned, and know when to
 ask instead of act.
 
-It runs on a laptop. The default config tunes Qwen3-1.7B with LoRA on Apple Silicon; the same config
-picks up a CUDA GPU if there is one, and falls back to CPU if there is not.
+It runs on a laptop. The default config tunes Qwen3-0.6B with LoRA on Apple Silicon; the same config
+picks up a CUDA GPU if there is one, and falls back to CPU if there is not. Step up a size or two
+once the pipeline is trustworthy — see [Choosing the size](#choosing-the-size).
 
 There is no data to find first: `tcsft generate` writes a synthetic dataset for the bundled example
 scenario (send a payment to a saved payee), so a clone goes from `git clone` to a trained adapter in
@@ -62,21 +63,25 @@ uv run tcsft-train train --config configs/mac_mps.yaml
 
 # 5. Merge the adapter into the base model for standalone serving
 uv run tcsft-train merge \
-  --adapter outputs/payments-qwen3-1.7b-lora/adapter \
-  --output outputs/payments-qwen3-1.7b-lora/merged
+  --adapter outputs/payments-qwen3-0.6b-lora/adapter \
+  --output outputs/payments-qwen3-0.6b-lora/merged
 
 # 6. Serve (OpenAI-compatible)
-# vllm serve outputs/payments-qwen3-1.7b-lora/merged \
+# vllm serve outputs/payments-qwen3-0.6b-lora/merged \
 #   --enable-auto-tool-choice --tool-call-parser hermes
 ```
 
 Score predicted tool calls against reference ones with `uv run tcsft evaluate data/predictions.jsonl`.
 
-**How long it takes.** Measured on an Apple M3 Pro, Qwen3-1.7B with the default config: `make demo`
-(300 dialogues, 274 of them training, 2 epochs, 70 optimizer steps) took **29m41s** — 25.4 s per
-step, 3.2 s per training example. A 1000-dialogue run extrapolates to about 100 minutes. A CUDA GPU
-is an order of magnitude faster — MPS is usable, not quick. Read [Hardware](#hardware) before
-changing the memory settings.
+**How long it takes.** Measured on an Apple M3 Pro with the default config: `make demo` (300
+dialogues, 2 epochs, 68 optimizer steps) took **24m44s**, ending at a held-out loss of 0.045. A
+1000-dialogue run extrapolates to roughly 80 minutes. A CUDA GPU is an order of magnitude faster —
+MPS is usable, not quick.
+
+Treat MPS wall-clock numbers as approximate: the same config measured 18.4 and 21.8 seconds per step
+in two different sessions, and evaluation inside this very run slowed 5x between the first epoch and
+the second as the machine warmed up. Ratios measured back to back are trustworthy; absolute times
+are not. Read [Hardware](#hardware) before changing the memory settings.
 
 The dialogues carry no reasoning content, so a Qwen3 tune must be served in non-thinking mode
 (`enable_thinking: false`) — the mode it was trained in.
@@ -195,7 +200,7 @@ it. Review a sample, and feed known names in with `--term`. See
 
 Two starting points:
 
-- [configs/mac_mps.yaml](configs/mac_mps.yaml) — Qwen3-1.7B + LoRA, `device: auto`. The default.
+- [configs/mac_mps.yaml](configs/mac_mps.yaml) — Qwen3-0.6B + LoRA, `device: auto`. The default.
 - [configs/cuda_qlora.yaml](configs/cuda_qlora.yaml) — Qwen3-8B in 4-bit with fused cross-entropy
   and MLflow, for a single CUDA GPU. Needs `uv sync --group cuda`.
 
@@ -217,24 +222,52 @@ Experiment tracking is opt-in. With no `tracking:` section nothing is reported a
 `report_to: ["mlflow"]` and an `mlflow_experiment` name to log params, the config artifact and
 trainer metrics. MLflow is imported only if you ask for it.
 
+## Choosing the size
+
+The default is **Qwen3-0.6B**, which is smaller than you would ship. That is deliberate: the first
+things you debug are the data pipeline, the loss masking and the metrics, and all three misbehave
+identically at 0.6B and at 8B — the small one just tells you sooner.
+
+Measured on an M3 Pro, same 300-dialogue corpus, one epoch, 34 optimizer steps:
+
+| | Qwen3-0.6B | Qwen3-1.7B |
+|---|---|---|
+| Trainable parameters | 10.1M (1.66%) | 17.4M (1.00%) |
+| Seconds per step | 18.4 | 34.1 |
+| Wall clock | 11m02s | 19m31s |
+| Held-out loss | 0.105 | 0.136 |
+
+Two things worth reading carefully. The speed-up is **1.85x, not the 2.8x** the parameter counts
+suggest — model loading, the optimizer, evaluation and MPS launch overhead do not shrink with the
+model. And the smaller model came out *ahead* on loss, which is not evidence that it is better: at
+34 steps both are undertrained, the adapter is a larger fraction of the smaller model, and the
+held-out set is 26 dialogues, so a gap of 0.03 means nothing.
+
+That last point is the one to take away. **This dataset cannot rank models.** It is template-
+generated and low-entropy, so once a model has the sentence shapes there is nothing left to learn,
+and loss saturates for everyone. It is a good benchmark for the pipeline and a useless one for
+choosing what to ship. For that you need real dialogues and tool-call metrics, not loss.
+
+So: iterate at 0.6B, and step up to 1.7B or 4B once the harness is trustworthy and the question has
+changed from "does this train" to "are the arguments right".
+
 ## Hardware
 
-The configuration measured end to end: **Qwen3-1.7B, LoRA r=16, `max_seq_length: 2048`, micro-batch
-1 with 8-step accumulation, gradient checkpointing on, on an Apple M3 Pro with 36 GB** — 17.4M
-trainable parameters (1.0% of the model), a steady 25.4 seconds per optimizer step. The
-`make demo` run it was measured on converged as you would expect on synthetic data — training loss
-0.29 → 0.06, held-out loss 0.097 after the first epoch and 0.060 after the second.
+The default configuration measured end to end: **Qwen3-0.6B, LoRA r=16, `max_seq_length: 2048`,
+micro-batch 1 with 8-step accumulation, gradient checkpointing on, on an Apple M3 Pro with 36 GB** —
+10.1M trainable parameters (1.66% of the model).
 
 **On MPS, leave `gradient_checkpointing: true`.** This is the one setting worth stating as a rule
 rather than a preference. PyTorch's MPS allocator may reserve well beyond physical memory — 1.7x the
-recommended maximum by default — and does not release what it has cached. With checkpointing off,
-the same 1.7B run grew to a 42 GB footprint on this 36 GB machine, filled 16 GB of swap, and decayed
-from 20 s/step to over 200 s/step. It never raised an error; it just got slower until it was
-unusable, which is the worst way for a memory problem to present itself.
+recommended maximum by default — and does not release what it has cached. Measured on a 1.7B run
+with checkpointing off: the footprint grew to 42 GB on this 36 GB machine, filled 16 GB of swap, and
+decayed from 20 s/step to over 200 s/step. It never raised an error; it just got slower until it was
+unusable, which is the worst way for a memory problem to present itself. The default model leaves
+more headroom than that, but the failure is silent enough to be worth not courting.
 
 That also makes process memory a poor guide to what a run *needs* — the footprint expands to fill
 what is available. Rather than quote invented per-model numbers, the levers, in the order to reach
-for them:
+for them when a run does not fit:
 
 1. `training.gradient_checkpointing: true` — the biggest saving, and the default on MPS for the
    reason above. Costs roughly 30% throughput on hardware that has memory to spare.
@@ -242,7 +275,8 @@ for them:
    batch the same — already the case in the MPS config, so this one is for CUDA.
 3. Lower `dataset.max_seq_length` to what `tcsft stats` says you need — activation memory is linear
    in it, and 2048 is already generous for the example scenario's ~880-token dialogues.
-4. A smaller base model. Qwen3-0.6B is roughly a third of 1.7B in both memory and time.
+4. A smaller base model — though the default is already the smallest of the Qwen3 family, so this
+   lever only exists if you have stepped up.
 
 On CUDA, `configs/cuda_qlora.yaml` adds 4-bit base weights and fused cross-entropy, which is what
 makes an 8B model fit a mid-range card. Both are CUDA-only and the trainer refuses them elsewhere.

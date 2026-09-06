@@ -29,7 +29,7 @@ from .stats import (
 )
 
 _base_model_option = click.option(
-    "--base-model", default="Qwen/Qwen3-1.7B", show_default=True, help="Tokenizer to measure with."
+    "--base-model", default="Qwen/Qwen3-0.6B", show_default=True, help="Tokenizer to measure with."
 )
 
 __all__ = ["main"]

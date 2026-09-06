@@ -59,10 +59,15 @@ reference), size against your hardware, and a licence you can actually ship.
 | Mistral Small 3.x | 24B | Apache 2.0 | Fast, decent function calling |
 | Phi-4 | 14B | MIT | Compact, good for experiments |
 
-Start smaller than you think. A 1.7B tune tells you within an hour whether your data pipeline,
-masking and metrics are correct — which is what actually goes wrong first. Scale up once the
-harness is trustworthy: 4B and 8B are the usual landing spots for a narrow production flow, and a
-MoE like Qwen3-30B-A3B is cheap at inference because only ~3B parameters are active.
+Start smaller than you think — smaller than you will ship. The first thing you are debugging is
+never the model, it is the data pipeline, the masking and the metrics, and all three misbehave
+identically at 0.6B and at 8B while the small one tells you in minutes. That is why this repo
+defaults to Qwen3-0.6B.
+
+Then scale up, and change your yardstick when you do: loss stops being informative once the model
+fits the format, and the question becomes argument accuracy on real dialogues. 4B and 8B are the
+usual landing spots for a narrow production flow, and a MoE like Qwen3-30B-A3B is cheap at
+inference because only ~3B parameters are active.
 
 ## Method
 
