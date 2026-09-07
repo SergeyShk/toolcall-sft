@@ -30,7 +30,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, 
 
 from ..masking import TemplateCompatibilityError
 from ..metrics import TurnRecord
-from ..parsing import TOOL_CALL_OPEN, check_tool_call, parse_assistant_output
+from ..parsing import TOOL_CALL_OPEN, check_tool_calls, parse_assistant_output
 from ..schema import Dialogue, ToolCall
 from .common import resolve_device, resolve_dtype, tokenize_dialogues
 
@@ -107,6 +107,13 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
         list(example.input_ids[: example.prompt_tokens]) for _dialogue, examples in tokenized for example in examples
     ]
     logger.info("%d dialogues -> %d turns to generate", len(tokenized), len(prompts))
+    unchecked = sum(1 for dialogue, _examples in tokenized if not dialogue.tools)
+    if unchecked:
+        logger.warning(
+            "%d of %d dialogues declare no tool schemas; their calls are recorded unchecked",
+            unchecked,
+            len(tokenized),
+        )
 
     model = _load_model(settings.model, dtype=dtype, device=device)
     generation = GenerationConfig(
@@ -128,7 +135,7 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
             position += 1
             message = dialogue.messages[example.turn_index]
             parsed = parse_assistant_output(raw)
-            problems = [check_tool_call(call, dialogue.tools) for call in parsed.tool_calls]
+            problems = check_tool_calls(parsed.tool_calls, dialogue.tools)
             records.append(
                 {
                     "dialogue_id": dialogue.dialogue_id,

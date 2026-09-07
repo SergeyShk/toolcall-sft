@@ -10,6 +10,9 @@ each turn (call or reply), did it pick the right tool, did it get the arguments
 right, and would its calls have run at all (parsed, schema-valid). Free text is
 not scored. A turn is correct when its calls are exactly the reference calls and
 nothing failed to parse.
+
+A rate with nothing to divide by is None. Argument accuracy covers only the calls
+that found a partner by name.
 """
 
 from collections.abc import Iterable, Sequence
@@ -77,36 +80,37 @@ class CallTotals:
     matched_arguments: int
 
     @property
-    def name_recall(self) -> float:
+    def name_recall(self) -> float | None:
         return _rate(self.name_matches, self.expected_calls)
 
     @property
-    def name_precision(self) -> float:
+    def name_precision(self) -> float | None:
         return _rate(self.name_matches, self.predicted_calls)
 
     @property
-    def exact_recall(self) -> float:
+    def exact_recall(self) -> float | None:
         return _rate(self.exact_matches, self.expected_calls)
 
     @property
-    def exact_precision(self) -> float:
+    def exact_precision(self) -> float | None:
         return _rate(self.exact_matches, self.predicted_calls)
 
     @property
-    def argument_accuracy(self) -> float:
+    def argument_accuracy(self) -> float | None:
+        """Over the name-matched pairs only."""
         return _rate(self.matched_arguments, self.expected_arguments)
 
-    def as_dict(self) -> dict[str, float | int]:
+    def as_dict(self) -> dict[str, float | int | None]:
         return {
             "expected": self.expected_calls,
             "predicted": self.predicted_calls,
             "name_matches": self.name_matches,
             "exact_matches": self.exact_matches,
-            "name_precision": round(self.name_precision, 4),
-            "name_recall": round(self.name_recall, 4),
-            "exact_precision": round(self.exact_precision, 4),
-            "exact_recall": round(self.exact_recall, 4),
-            "argument_accuracy": round(self.argument_accuracy, 4),
+            "name_precision": _round(self.name_precision),
+            "name_recall": _round(self.name_recall),
+            "exact_precision": _round(self.exact_precision),
+            "exact_recall": _round(self.exact_recall),
+            "argument_accuracy": _round(self.argument_accuracy),
         }
 
 
@@ -127,14 +131,14 @@ class GroupReport:
     missed_calls: int
 
     @property
-    def turn_accuracy(self) -> float:
+    def turn_accuracy(self) -> float | None:
         return _rate(self.correct_turns, self.turns)
 
-    def as_dict(self) -> dict[str, float | int]:
+    def as_dict(self) -> dict[str, float | int | None]:
         return {
             "turns": self.turns,
             "correct_turns": self.correct_turns,
-            "turn_accuracy": round(self.turn_accuracy, 4),
+            "turn_accuracy": _round(self.turn_accuracy),
             "false_fires": self.false_fires,
             "missed_calls": self.missed_calls,
         }
@@ -157,7 +161,7 @@ class ToolCallReport:
     by_group: tuple[GroupReport, ...]
 
     @property
-    def turn_accuracy(self) -> float:
+    def turn_accuracy(self) -> float | None:
         return _rate(self.correct_turns, self.turns)
 
     @property
@@ -165,19 +169,19 @@ class ToolCallReport:
         return self.turns - self.expected_call_turns
 
     @property
-    def false_fire_rate(self) -> float:
-        return _rate(self.false_fires, self.expected_text_turns, empty=0.0)
+    def false_fire_rate(self) -> float | None:
+        return _rate(self.false_fires, self.expected_text_turns)
 
     @property
-    def missed_call_rate(self) -> float:
-        return _rate(self.missed_calls, self.expected_call_turns, empty=0.0)
+    def missed_call_rate(self) -> float | None:
+        return _rate(self.missed_calls, self.expected_call_turns)
 
     @property
     def attempted_calls(self) -> int:
         return self.calls.predicted_calls + self.malformed_calls
 
     @property
-    def valid_rate(self) -> float:
+    def valid_rate(self) -> float | None:
         """Share of attempted calls a tool router would have run."""
         return _rate(self.calls.predicted_calls - self.invalid_calls, self.attempted_calls)
 
@@ -185,20 +189,20 @@ class ToolCallReport:
         return {
             "turns": self.turns,
             "correct_turns": self.correct_turns,
-            "turn_accuracy": round(self.turn_accuracy, 4),
+            "turn_accuracy": _round(self.turn_accuracy),
             "decisions": {
                 "expected_call_turns": self.expected_call_turns,
                 "expected_text_turns": self.expected_text_turns,
                 "false_fires": self.false_fires,
                 "missed_calls": self.missed_calls,
-                "false_fire_rate": round(self.false_fire_rate, 4),
-                "missed_call_rate": round(self.missed_call_rate, 4),
+                "false_fire_rate": _round(self.false_fire_rate),
+                "missed_call_rate": _round(self.missed_call_rate),
             },
             "calls": {
                 **self.calls.as_dict(),
                 "malformed": self.malformed_calls,
                 "invalid": self.invalid_calls,
-                "valid_rate": round(self.valid_rate, 4),
+                "valid_rate": _round(self.valid_rate),
             },
             "by_tool": {tool.name: tool.calls.as_dict() for tool in self.by_tool},
             "by_group": {group.name: group.as_dict() for group in self.by_group},
@@ -311,9 +315,9 @@ def format_report(report: ToolCallReport) -> str:
         f"missed calls {report.missed_calls} ({_percent(report.missed_call_rate)} of call turns)",
         f"calls: {report.calls.expected_calls} expected, {report.calls.predicted_calls} predicted, "
         f"{report.malformed_calls} malformed, {report.invalid_calls} invalid ({_percent(report.valid_rate)} would run)",
-        f"  name precision {report.calls.name_precision:.3f}  recall {report.calls.name_recall:.3f} | "
-        f"exact precision {report.calls.exact_precision:.3f}  recall {report.calls.exact_recall:.3f} | "
-        f"argument accuracy {report.calls.argument_accuracy:.3f}",
+        f"  name precision {_ratio(report.calls.name_precision)}  recall {_ratio(report.calls.name_recall)} | "
+        f"exact precision {_ratio(report.calls.exact_precision)}  recall {_ratio(report.calls.exact_recall)} | "
+        f"argument accuracy {_ratio(report.calls.argument_accuracy)}",
     ]
     if report.by_tool:
         lines.append("by tool:")
@@ -323,9 +327,9 @@ def format_report(report: ToolCallReport) -> str:
                 str(tool.calls.expected_calls),
                 str(tool.calls.predicted_calls),
                 str(tool.calls.exact_matches),
-                f"{tool.calls.exact_precision:.3f}",
-                f"{tool.calls.exact_recall:.3f}",
-                f"{tool.calls.argument_accuracy:.3f}",
+                _ratio(tool.calls.exact_precision),
+                _ratio(tool.calls.exact_recall),
+                _ratio(tool.calls.argument_accuracy),
             )
             for tool in report.by_tool
         ]
@@ -337,7 +341,7 @@ def format_report(report: ToolCallReport) -> str:
                 group.name,
                 str(group.turns),
                 str(group.correct_turns),
-                f"{group.turn_accuracy:.3f}",
+                _ratio(group.turn_accuracy),
                 str(group.false_fires),
                 str(group.missed_calls),
             )
@@ -401,12 +405,23 @@ def _find(candidates: list[ToolCall], call: ToolCall, *, exact_arguments: bool) 
     return None
 
 
-def _rate(matches: int, total: int, *, empty: float = 1.0) -> float:
-    return matches / total if total else empty
+def _rate(matches: int, total: int) -> float | None:
+    return matches / total if total else None
 
 
-def _percent(rate: float) -> str:
-    return f"{100 * rate:.1f}%"
+def _round(rate: float | None) -> float | None:
+    return None if rate is None else round(rate, 4)
+
+
+_UNDEFINED = "—"
+
+
+def _percent(rate: float | None) -> str:
+    return _UNDEFINED if rate is None else f"{100 * rate:.1f}%"
+
+
+def _ratio(rate: float | None) -> str:
+    return _UNDEFINED if rate is None else f"{rate:.3f}"
 
 
 def _table(header: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:

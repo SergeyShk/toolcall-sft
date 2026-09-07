@@ -232,10 +232,12 @@ right call, and `tcsft-train predict` answers it per turn:
 - **False fires and missed calls.** A call where the reference replies with text, and the reverse.
   The negative branches exist to measure the first one.
 - **Per tool and per branch.** Precision, recall and argument accuracy by tool; turn accuracy by
-  branch of the generator (the `dialogue_id` prefix).
+  branch of the generator (the `dialogue_id` prefix). Argument accuracy is over the expected calls
+  that found a partner by name. A rate with nothing to divide by prints `—`.
 - **Would it run.** `<tool_call>` blocks that do not parse, and calls that parse but fail their
   tool's schema: unknown tool, missing required argument, undeclared argument, wrong type, value
-  outside an `enum`.
+  outside an `enum`. A dialogue that declares no `tools` is checked against nothing; its calls are
+  recorded unchecked.
 
 On the held-out split of the default run (33 dialogues, 106 assistant turns), greedy, scored on an
 M3 Pro. The middle column is the same config trained with the whole-dialogue rendering the diagram

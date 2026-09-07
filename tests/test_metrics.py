@@ -159,16 +159,33 @@ def test_evaluate_turns_groups_by_dialogue_branch() -> None:
     assert report.turns == 4  # the ungrouped turn still counts overall
 
 
-def test_evaluate_turns_empty_reply_turn_is_correct_and_rates_stay_defined() -> None:
+def test_evaluate_turns_rate_without_a_denominator_is_none_not_perfect() -> None:
     report = evaluate_turns([_turn([], [])])
 
     assert report.turn_accuracy == 1.0
-    assert report.calls.name_precision == 1.0
-    assert report.calls.exact_recall == 1.0
-    assert report.calls.argument_accuracy == 1.0
-    assert report.false_fire_rate == 0.0
-    assert report.missed_call_rate == 0.0
-    assert report.valid_rate == 1.0
+    assert report.false_fire_rate == 0.0  # one reply turn, no false fire
+    assert report.calls.name_precision is None
+    assert report.calls.exact_recall is None
+    assert report.calls.argument_accuracy is None
+    assert report.missed_call_rate is None
+    assert report.valid_rate is None
+
+
+def test_report_dashes_a_tool_the_model_never_called() -> None:
+    report = evaluate_turns(
+        [
+            _turn([_call("escalate", reason="x")], [], dialogue_id="out_of_scope-1"),
+            _turn([_call("get_payees", name="Tom")], [_call("get_payees", name="Tom")], dialogue_id="happy_path-1"),
+        ]
+    )
+
+    escalate = next(tool.calls for tool in report.by_tool if tool.name == "escalate")
+    assert escalate.exact_recall == 0.0
+    assert escalate.exact_precision is None and escalate.argument_accuracy is None
+    assert json.loads(json.dumps(report.as_dict()))["by_tool"]["escalate"]["exact_precision"] is None
+
+    row = next(line for line in format_report(report).splitlines() if line.strip().startswith("escalate"))
+    assert row.split() == ["escalate", "1", "0", "0", "—", "0.000", "—"]
 
 
 def test_turn_record_correct_needs_exact_calls_and_nothing_malformed() -> None:

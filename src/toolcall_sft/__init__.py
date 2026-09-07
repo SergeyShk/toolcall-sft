@@ -47,7 +47,14 @@ from .metrics import (
     evaluate_turns,
     format_report,
 )
-from .parsing import TOOL_CALL_CLOSE, TOOL_CALL_OPEN, ParsedTurn, check_tool_call, parse_assistant_output
+from .parsing import (
+    TOOL_CALL_CLOSE,
+    TOOL_CALL_OPEN,
+    ParsedTurn,
+    check_tool_call,
+    check_tool_calls,
+    parse_assistant_output,
+)
 from .scenario import SYSTEM_PROMPT, TOOLS, tool_names
 from .schema import (
     DatasetError,
@@ -117,6 +124,7 @@ __all__ = [
     "branch_of",
     "chat_messages",
     "check_tool_call",
+    "check_tool_calls",
     "compare_tool_calls",
     "compute_token_stats",
     "content_fingerprint",

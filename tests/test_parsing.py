@@ -1,4 +1,4 @@
-from toolcall_sft import TOOLS, ToolCall, check_tool_call, parse_assistant_output
+from toolcall_sft import TOOLS, ToolCall, check_tool_call, check_tool_calls, parse_assistant_output
 
 CALL = '<tool_call>\n{"name": "get_payees", "arguments": {"name": "Tom Bright"}}\n</tool_call>'
 
@@ -108,6 +108,13 @@ def test_check_bool_is_not_a_number_and_a_whole_float_is_an_integer() -> None:
         "argument 'n' should be integer, got bool",
         "argument 'f' should be boolean, got int",
     )
+
+
+def test_check_tool_calls_reports_nothing_when_the_dialogue_declares_no_tools() -> None:
+    calls = (_call("get_payees", name="Tom"), _call("send_money", amount=1))
+
+    assert check_tool_calls(calls, ()) == ((), ())  # nothing to check against
+    assert check_tool_calls(calls, TOOLS) == ((), ("unknown tool 'send_money'",))
 
 
 def test_check_tool_without_declared_properties_accepts_anything() -> None:

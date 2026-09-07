@@ -9,7 +9,7 @@ the model tried to act, and a scorer needs to know that.
 The schema check covers what a tool router would reject before running anything:
 unknown tool, missing required argument, undeclared argument, wrong primitive type,
 value outside an ``enum``. It is not a JSON Schema validator; nested schemas are not
-descended into.
+descended into. A dialogue that declares no tools is checked against nothing at all.
 """
 
 import json
@@ -20,7 +20,14 @@ from typing import Any
 
 from .schema import ToolCall
 
-__all__ = ["TOOL_CALL_CLOSE", "TOOL_CALL_OPEN", "ParsedTurn", "check_tool_call", "parse_assistant_output"]
+__all__ = [
+    "TOOL_CALL_CLOSE",
+    "TOOL_CALL_OPEN",
+    "ParsedTurn",
+    "check_tool_call",
+    "check_tool_calls",
+    "parse_assistant_output",
+]
 
 TOOL_CALL_OPEN = "<tool_call>"
 TOOL_CALL_CLOSE = "</tool_call>"
@@ -88,6 +95,13 @@ def check_tool_call(call: ToolCall, tools: Sequence[Mapping[str, Any]]) -> tuple
             continue
         problems.extend(_check_value(name, value, declared))
     return tuple(problems)
+
+
+def check_tool_calls(calls: Sequence[ToolCall], tools: Sequence[Mapping[str, Any]]) -> tuple[tuple[str, ...], ...]:
+    """``check_tool_call`` per call, or no problems at all when the dialogue declares no tools."""
+    if not tools:
+        return tuple(() for _ in calls)
+    return tuple(check_tool_call(call, tools) for call in calls)
 
 
 def _parse_call(body: str) -> ToolCall | None:
