@@ -1,51 +1,32 @@
-"""Deterministic PII anonymization for dialogues captured from a real system.
+"""Deterministic pseudonymization for dialogues captured from a real system.
 
-Three sources of sensitive terms:
+Sources of terms to replace:
 
-- regex detectors for structured identifiers (emails, international phone
-  numbers, IBANs, card numbers, 8-digit account numbers, UUIDs, ObjectIds).
-  These are deliberately region-neutral. Locally-shaped identifiers — national
-  ids, tax numbers, postal codes, domestic bank codes — differ per country and
-  are yours to add; they are exactly what a generic list misses;
-- values harvested from tool payloads under name-like keys — payee and
-  account-holder names travel through tool results into replies, so the tool
-  payloads know exactly which names to scrub. Harvesting is regex-based on the
-  raw payload text: production tool results are not always clean JSON. Keys
-  are matched case-insensitively with underscores and hyphens ignored, so
-  ``payee_name``, ``payeeName`` and ``PayeeName`` are the same key;
-- a profile block in the system prompt (``- **Label**: value`` lines) —
-  name labels become global name terms, date-of-birth and address values
-  are replaced in place. This is an example of a deployment-specific hook,
-  written for one prompt layout; if your prompt embeds customer details in
-  another shape, ``_iter_profile_terms`` is the function to replace.
+- regex detectors for structured identifiers: emails, international phone
+  numbers, IBANs, card numbers, 8-digit account numbers, UUIDs, ObjectIds.
+  Region-neutral on purpose; national ids, postal codes and domestic bank codes
+  are yours to add;
+- values under name-like keys in tool payloads and tool-call arguments (keys
+  compared case-insensitively, ignoring ``_`` and ``-``);
+- a ``- **Label**: value`` profile block in the system prompt. A hook for one
+  prompt layout; adapt ``_iter_profile_terms`` to yours.
 
-Financial fields (account number, IBAN, BIC) are additionally replaced by key
-wherever ``"key": "value"`` appears in a payload, regardless of the value's
-format — an account number written without separators still gets scrubbed.
+Financial fields (account number, IBAN, BIC) are also replaced by key wherever
+``"key": "value"`` appears, whatever the value looks like.
 
-Each text is scrubbed in a single pass: candidate spans are claimed over the
-original text in priority order — key-driven financial values and protected
-amounts first, then exact profile values (date of birth, address), then the
-structured detectors, then harvested names — and a claimed span is never
-rescanned. An email address containing a harvested name is therefore replaced
-as one email, and a fake is never itself re-replaced. Name terms match whole
-words only: a harvested ``Lee`` does not touch ``fleet``.
+Each text is scrubbed in one pass over the original: spans are claimed in
+priority order (key-driven values and protected amounts, profile values,
+detectors, names) and never rescanned, so a fake is never re-replaced. Names
+match whole words only. Replacements are deterministic in (salt, kind, value),
+so an id stays consistent across turns and reruns.
 
-Replacements are deterministic in (salt, kind, original), so the same value
-maps to the same fake everywhere: an id passed from a tool result into a later
-tool call stays consistent, and re-running the pass is reproducible.
-Amounts are left untouched — they carry the scenario's semantics: values under
-amount-like keys are protected explicitly, and digit runs adjacent to a
-decimal dot are never treated as identifiers. Any other standalone 8-digit
-integer in free text is treated as an account number — including dates written
-as ``20240315``, which come out as a different 8-digit number. Tool schemas are
-never touched: their examples are static documentation and must stay
-byte-identical to what the model will be served with.
+Amounts are kept: values under amount-like keys are protected and digit runs
+next to a decimal point are never identifiers. Any other standalone 8-digit
+number is treated as an account number, dates written ``20240315`` included.
+Tool schemas are never touched.
 
-This is a mechanical pass, not a guarantee: a free-text name that never
-appears in a tool payload or the profile block survives it (an address inside
-an attached invoice, for example). Review a sample before training and feed
-known names in via ``extra_terms``.
+Mechanical, not a guarantee: a name that appears in no payload survives.
+Review a sample and pass known names via ``extra_terms``.
 """
 
 import hashlib
@@ -70,7 +51,7 @@ _LAST_NAMES = (
 
 
 def _normalize_key(key: str) -> str:
-    """Key identity used for every lookup: case, underscores and hyphens do not matter."""
+    """Key identity for lookups: case, underscores and hyphens do not matter."""
     return key.lower().replace("_", "").replace("-", "")
 
 
@@ -94,8 +75,7 @@ _FINANCIAL_KEYS: Mapping[str, str] = {
 
 _SKIP_VALUES = frozenset({"-", "n/a", "none", "not set", "unknown", "null", "true", "false"})
 
-# Keys whose numeric values are money, not identifiers — protected from the digit detectors.
-# Matched against the normalized key, hence "minorunits" rather than "minor_units".
+# Money, not identifiers; matched against the normalized key ("minorunits").
 _PROTECTED_KEYS = re.compile(r"amount|price|total|balance|fee|cents|minorunits")
 
 _DETECTORS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -196,8 +176,7 @@ class Anonymizer:
         return value
 
     def __scrub_text(self, text: str, terms: Sequence[tuple[str, str]], counts: Counter[str]) -> str:
-        """Single pass over the original text: spans are collected by priority and never rescanned,
-        so a fake can neither be re-replaced nor diverge from the same value faked elsewhere."""
+        """One pass over the original text; claimed spans are never rescanned."""
         spans: list[tuple[int, int, str | None]] = []
 
         def claim(start: int, end: int, replacement: str | None) -> bool:
@@ -248,7 +227,7 @@ class Anonymizer:
         claim: Callable[[int, int, str | None], bool],
         counts: Counter[str],
     ) -> None:
-        # Whole words only: a short harvested name must not rewrite the inside of an ordinary word.
+        # Whole words only: a harvested "Lee" must not rewrite "fleet".
         pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", re.IGNORECASE)
         for match in pattern.finditer(text):
             if claim(match.start(), match.end(), self.__fake(kind, term)):

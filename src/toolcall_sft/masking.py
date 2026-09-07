@@ -1,30 +1,20 @@
-"""Chat-template-exact tokenization with assistant-only loss masks.
+"""Chat-template-exact tokenization with loss on assistant tokens only.
 
-One training example per assistant turn. For turn *k* the prompt is what the
-inference server builds at that moment — the conversation so far, rendered by
-the tokenizer's own chat template with ``add_generation_prompt=True`` and the
-same template kwargs the server passes (``enable_thinking=False`` for Qwen3) —
-and the target is what the template appends when turn *k* itself is rendered:
-content, serialized tool calls and the turn terminator. Loss covers the target.
+One example per assistant turn. The prompt is the conversation so far, rendered
+with ``add_generation_prompt=True`` and the template kwargs the server uses; the
+target is what the template appends for the turn itself (content, tool calls,
+terminator).
 
-Why per turn rather than one sequence per dialogue: templates render history
-and the generation prompt differently. Qwen3 in non-thinking mode puts an empty
-``<think>`` block before the generation prompt but strips it from every
-assistant turn except the last when rendering history, so a whole-dialogue
-render trains the tool-call turns on a prompt the server never produces. Per-
-turn examples repeat each prefix — about three times the tokens per epoch for
-the example scenario's three to four turns, and more for longer dialogues —
-and buy byte-exact agreement with serving on every turn. The trained tokens
-are the same either way; what triples is the compute spent on the prompt.
+Per turn rather than per dialogue because templates render history and the
+generation prompt differently. Qwen3 in non-thinking mode puts an empty <think>
+block before the generation prompt but keeps it only on the last assistant turn
+of the history, so a whole-dialogue render trains every tool-call turn on a
+prompt the server never builds. Repeating the prefix costs about 3x tokens per
+epoch on the example scenario; the trained tokens are the same.
 
-Loud failures instead of silent misalignment:
-
-- the rendered turn must extend the rendered prompt — otherwise no training
-  text can agree with inference for that template;
-- assistant content and tool names must appear verbatim in the target;
-- the prompt's tokens must be a prefix of the full example's tokens, so that a
-  BPE merge across the prompt/target boundary cannot leak target characters
-  into the prompt or vice versa.
+Raises TemplateCompatibilityError instead of misaligning silently: the rendered
+turn must extend the prompt, content and tool names must appear verbatim in the
+target, and the prompt's tokens must be a prefix of the example's tokens.
 """
 
 from collections.abc import Mapping, Sequence
@@ -44,12 +34,12 @@ TARGET_MARKERS = ("⟦", "⟧")
 
 
 class TemplateCompatibilityError(Exception):
-    """The tokenizer's chat template cannot produce training text that agrees with inference."""
+    """The chat template cannot produce training text that agrees with inference."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MaskedExample:
-    """One assistant turn: the prompt the server would build, then the target the model must emit."""
+    """One assistant turn: prompt tokens (masked) followed by target tokens (loss)."""
 
     turn_index: int
     input_ids: tuple[int, ...]
@@ -114,11 +104,7 @@ def render_example(
     *,
     markers: tuple[str, str] = TARGET_MARKERS,
 ) -> str:
-    """The example decoded token by token, with the tokens that carry loss wrapped in ``markers``.
-
-    Decoding from the token ids rather than re-rendering the template shows the
-    tokenized reality, boundary included.
-    """
+    """The example decoded from its token ids, with the tokens that carry loss wrapped in ``markers``."""
     open_marker, close_marker = markers
     prompt = tokenizer.decode(list(example.input_ids[: example.prompt_tokens]))
     target = tokenizer.decode(list(example.input_ids[example.prompt_tokens :]))
@@ -133,8 +119,7 @@ def _render(
     add_generation_prompt: bool,
     kwargs: Mapping[str, Any],
 ) -> str:
-    # transformers annotates the conversation as list[dict[str, str]], which rules out valid
-    # tool_calls entries and tool schemas; the casts widen to what the template accepts at runtime.
+    # transformers types the conversation as list[dict[str, str]]; tool_calls and tool schemas are wider.
     rendered = tokenizer.apply_chat_template(
         cast("list[Any]", [dict(message) for message in messages]),
         tools=cast("list[Any] | None", tools),
@@ -148,8 +133,7 @@ def _render(
 
 
 def _encode(tokenizer: "PreTrainedTokenizerBase", text: str) -> list[int]:
-    # The template already placed every special token; adding BOS/EOS again would train on a
-    # sequence the server never builds.
+    # The template already placed every special token.
     ids = tokenizer(text, add_special_tokens=False)["input_ids"]
     if not isinstance(ids, list):
         raise TemplateCompatibilityError("unexpected tokenizer output shape for a single text")

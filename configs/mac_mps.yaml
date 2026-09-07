@@ -1,26 +1,14 @@
-# Laptop-scale run: Qwen3-0.6B + LoRA on Apple Silicon (MPS).
-# ~1.2 GB of bf16 base weights plus fp32 adapters. `device: auto` also picks up
-# CUDA or falls back to CPU, so this config is a working default everywhere; it is
-# simply tuned for a laptop.
-#
-# 0.6B is the default because the loop you iterate on first is the pipeline and the
-# data, and both show up at this size. Step up to Qwen3-1.7B or 4B once the harness
-# is trustworthy and you are judging quality rather than plumbing.
+# Qwen3-0.6B + LoRA on a laptop (Apple Silicon). `device: auto` also picks CUDA or CPU.
 run_name: payments-qwen3-0.6b-lora
 base_model: Qwen/Qwen3-0.6B
 output_dir: outputs/payments-qwen3-0.6b-lora
+
 dataset:
   train_path: data/train.jsonl
   eval_path: data/eval.jsonl
-  # Budget per training example. An example is one assistant turn with the whole
-  # conversation before it as the prompt, so the last turn of a dialogue is the one
-  # that has to fit. `tcsft stats --config <this file>` reports it.
-  max_seq_length: 2048
-  # Passed to the chat template for both the prompt and the target. Qwen3 renders an
-  # empty <think> block into the generation prompt in this mode, and that is the mode
-  # the tuned model has to be served in. `tcsft render` shows the effect.
+  max_seq_length: 2048          # per example; the last turn of a dialogue is the longest (`tcsft stats --config`)
   chat_template_kwargs:
-    enable_thinking: false
+    enable_thinking: false      # Qwen3 non-thinking mode; serve with the same flag
 
 lora:
   r: 16
@@ -31,17 +19,9 @@ training:
   epochs: 2
   learning_rate: 2.0e-4
   per_device_batch_size: 1
-  # Defaults to per_device_batch_size. Eval materializes full-vocabulary logits per
-  # position, so on MPS this is the setting that decides whether the second epoch's
-  # evaluation is 30 seconds or 3 minutes.
-  eval_batch_size: 1
+  eval_batch_size: 1            # eval logits span a 150k vocabulary; keep this small on MPS
   gradient_accumulation_steps: 8
-  device: auto      # cuda -> mps -> cpu
-  precision: auto   # bf16 on an accelerator, fp32 on cpu
-  # Keep this on for MPS. PyTorch's MPS allocator is allowed to reserve well past
-  # physical memory (1.7x the recommended maximum by default) and will not give it
-  # back, so without checkpointing a 1.7B run on a 36 GB machine grows to a 42 GB
-  # footprint, the machine swaps, and step time degrades from 20s to 200s+ instead
-  # of failing outright. Measured, not theoretical.
-  gradient_checkpointing: true
+  device: auto                  # cuda -> mps -> cpu
+  precision: auto               # bf16 on an accelerator, fp32 on cpu
+  gradient_checkpointing: true  # keep on for MPS: the allocator overcommits and swaps instead of failing
   seed: 42

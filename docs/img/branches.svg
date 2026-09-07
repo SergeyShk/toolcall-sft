@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="180" viewBox="0 0 1000 180" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .t { fill: #111827; font-size: 15px; font-weight: 600; }
+      .cap { fill: #6b7280; font-size: 12px; }
+      .pct { fill: #ffffff; font-size: 12px; font-weight: 600; }
+      .pctd { fill: #1f2937; font-size: 12px; font-weight: 600; }
+      .name { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 11px; fill: #374151; }
+      .brk { stroke: #9ca3af; stroke-width: 1; fill: none; }
+    </style>
+  </defs>
+  <rect x="0.5" y="0.5" width="999" height="179" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+  <text x="30" y="30" class="t">Branch balance of the generated corpus</text>
+
+  <!-- brackets -->
+  <path d="M30,52 L30,46 L509,46 L509,52" class="brk"/>
+  <text x="270" y="42" text-anchor="middle" class="cap">51% reach create_payment</text>
+  <path d="M514,52 L514,46 L970,46 L970,52" class="brk"/>
+  <text x="742" y="42" text-anchor="middle" class="cap">49% must not call it</text>
+
+  <!-- bar: x 30..970 (940), y 60 h 40 -->
+  <rect x="30" y="60" width="282" height="40" fill="#16a34a"/>
+  <rect x="312" y="60" width="122" height="40" fill="#22c55e"/>
+  <rect x="434" y="60" width="75" height="40" fill="#4ade80"/>
+  <rect x="514" y="60" width="145" height="40" fill="#64748b"/>
+  <rect x="659" y="60" width="113" height="40" fill="#94a3b8"/>
+  <rect x="772" y="60" width="104" height="40" fill="#b6c0cc"/>
+  <rect x="876" y="60" width="94" height="40" fill="#d3dae2"/>
+
+  <text x="171" y="85" text-anchor="middle" class="pct">30%</text>
+  <text x="373" y="85" text-anchor="middle" class="pct">13%</text>
+  <text x="471" y="85" text-anchor="middle" class="pctd">8%</text>
+  <text x="586" y="85" text-anchor="middle" class="pct">16%</text>
+  <text x="715" y="85" text-anchor="middle" class="pct">12%</text>
+  <text x="824" y="85" text-anchor="middle" class="pctd">11%</text>
+  <text x="923" y="85" text-anchor="middle" class="pctd">10%</text>
+
+  <!-- names, two rows -->
+  <text x="171" y="122" text-anchor="middle" class="name">happy_path</text>
+  <text x="373" y="140" text-anchor="middle" class="name">missing_amount</text>
+  <text x="471" y="122" text-anchor="middle" class="name">payment_declined</text>
+  <text x="586" y="140" text-anchor="middle" class="name">out_of_scope</text>
+  <text x="715" y="122" text-anchor="middle" class="name">ambiguous_payee</text>
+  <text x="824" y="140" text-anchor="middle" class="name">payee_not_found</text>
+  <text x="923" y="122" text-anchor="middle" class="name">cancelled</text>
+
+  <text x="30" y="168" class="cap">payment_declined calls the write tool and gets a refusal back: the model has to report it, not the success it expected.</text>
+</svg>

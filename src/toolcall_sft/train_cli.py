@@ -64,9 +64,8 @@ def _tracking(experiment: ExperimentConfig, config_path: Path) -> Generator[None
 def merge(adapter: Path, output: Path) -> None:
     """Merge a LoRA adapter into its base model for standalone serving.
 
-    The merged model inherits the base model's generation_config. For a Qwen3 tune,
-    which is only valid in non-thinking mode, set the sampling parameters Qwen
-    recommends for that mode at the server (temperature 0.7, top_p 0.8, top_k 20).
+    The merged model inherits the base generation_config; for a Qwen3 tune set
+    non-thinking sampling (temperature 0.7, top_p 0.8, top_k 20) at the server.
     """
     try:
         merged = merge_adapter(adapter_dir=adapter, output_dir=output)

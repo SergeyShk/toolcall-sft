@@ -1,17 +1,8 @@
-"""Token-length statistics for a dataset under a specific base model's tokenizer.
+"""Token-length statistics under a base model's tokenizer, via the same per-turn
+tokenization as training.
 
-Answers the sizing questions before a training run: how long the examples are in
-the base model's tokens, what share of them actually carries loss, and how many
-dialogues survive a given ``max_seq_length``. Uses the same per-turn tokenization
-path as training, so the numbers match what the trainer will see.
-
-Three sizes matter per dialogue and they are different numbers:
-
-- ``longest_example`` — the last assistant turn's example, which carries the whole
-  conversation as its prompt. This is what has to fit ``max_seq_length``.
-- ``epoch_tokens`` — every example's length added up. Prefixes repeat across a
-  dialogue's turns, so this is what a pass over the data costs.
-- ``trained_tokens`` — target tokens across all examples. This is the signal.
+Per dialogue: ``longest_example`` (what must fit max_seq_length), ``epoch_tokens``
+(all examples added up; prefixes repeat) and ``trained_tokens`` (target tokens).
 """
 
 from collections.abc import Mapping, Sequence
@@ -38,10 +29,8 @@ __all__ = [
     "threshold_fits",
 ]
 
-# The example scenario's longest examples land around 500-900 tokens: a ~150-token
-# system prompt, ~250 tokens of tool schemas, the rest conversation. 2048 leaves room
-# for longer branches while keeping activations small enough to train on a laptop.
-# Retarget this together with dataset.max_seq_length when you bring your own data.
+# The example scenario's longest examples are ~730-920 tokens; 2048 leaves room for
+# longer branches while staying trainable on a laptop.
 DEFAULT_MAX_SEQ_LENGTH = 2048
 DEFAULT_THRESHOLDS = (1024, DEFAULT_MAX_SEQ_LENGTH, 4096, 8192)
 HISTOGRAM_EDGES = (256, 512, 1024, 2048, 4096)
@@ -67,7 +56,6 @@ def _count_tokens(
     dialogue: Dialogue,
     chat_template_kwargs: Mapping[str, Any] | None,
 ) -> DialogueTokenCount:
-    """Token accounting for one dialogue; raises TemplateCompatibilityError like training would."""
     examples = tokenize_dialogue(tokenizer, dialogue, chat_template_kwargs=chat_template_kwargs)
     return DialogueTokenCount(
         dialogue_id=dialogue.dialogue_id,
@@ -108,11 +96,9 @@ def filter_by_length(
     max_seq_length: int,
     chat_template_kwargs: Mapping[str, Any] | None = None,
 ) -> LengthFilterResult:
-    """Partition dialogues by whether their longest example fits ``max_seq_length``.
+    """Split dialogues by whether their longest example fits ``max_seq_length``.
 
-    Uses the same tokenization-with-masks path as training, so a kept dialogue is
-    exactly one the trainer will accept. Dialogues that fail to tokenize land in
-    ``failures`` — they cannot train either.
+    Dialogues that fail to tokenize go to ``failures``; they cannot train either.
     """
     if max_seq_length < 1:
         raise ValueError(f"max_seq_length must be >= 1, got {max_seq_length}")

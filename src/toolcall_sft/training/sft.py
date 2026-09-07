@@ -1,19 +1,12 @@
-"""LoRA / QLoRA supervised fine-tuning on chat-template-exact, per-turn examples.
+"""LoRA / QLoRA supervised fine-tuning on per-turn, chat-template-exact examples.
 
-Runs on CUDA, Apple Silicon (MPS) and CPU. The differences between them are all
-resolved in one place, ``_resolve_device`` / ``_resolve_dtype``, because getting
-them wrong fails deep inside the trainer with an unhelpful message: 4-bit
-quantization and the Liger kernels are CUDA-only, and ``TrainingArguments``'
-``bf16`` flag asks for CUDA-style autocast that MPS does not provide. On MPS the
-base model is instead loaded in bf16 directly and the LoRA parameters are kept in
-fp32, which is what keeps a 1.7B tune inside a laptop's memory without training
-the adapters in half precision.
+Runs on CUDA, MPS and CPU. Device differences live in ``_resolve_device`` and
+``_resolve_dtype``: 4-bit and Liger are CUDA-only, and ``bf16=True`` means CUDA
+autocast, so on MPS the base model is loaded in bf16 and the LoRA parameters are
+kept in fp32.
 
-Every run leaves a record next to its checkpoints: ``config.yaml`` as given,
-``run.json`` with the resolved settings, dataset sizes, library versions and git
-state, and ``example.txt`` — one training example decoded token by token with the
-loss span marked. That last file is the thing to look at when a tune behaves
-strangely: it is exactly what the model was shown.
+Each run writes ``config.yaml``, ``run.json`` and ``example.txt`` to output_dir
+before training starts.
 """
 
 import json
@@ -88,8 +81,8 @@ def run_sft(config: ExperimentConfig, *, config_path: Path | None = None) -> Pat
     peft_model = get_peft_model(model, _lora_config(config))
     assert isinstance(peft_model, PeftModel)  # guaranteed while mixed=False stays the default
     if dtype is not torch.float32:
-        # Half-precision adapters lose small updates to rounding. The base weights stay
-        # in bf16; peft casts activations into the adapter's dtype and back on its own.
+        # Half-precision adapters lose small updates to rounding; peft casts activations
+        # to the adapter dtype and back.
         for parameter in peft_model.parameters():
             if parameter.requires_grad:
                 parameter.data = parameter.data.to(torch.float32)
@@ -114,9 +107,7 @@ def run_sft(config: ExperimentConfig, *, config_path: Path | None = None) -> Pat
         gradient_checkpointing_kwargs={"use_reentrant": False} if config.training.gradient_checkpointing else None,
         eval_strategy="epoch" if eval_examples is not None else "no",
         save_strategy="epoch",
-        # Fused linear cross-entropy: the loss never materializes the fp32 logits
-        # tensor, which over a large vocabulary dominates memory at long context.
-        # CUDA only — see _check_supported.
+        # Fused linear cross-entropy; CUDA only, see _check_supported.
         use_liger_kernel=config.training.use_liger_kernel,
         seed=config.training.seed,
         report_to=list(config.tracking.report_to),
@@ -146,11 +137,10 @@ def _tokenize(
     *,
     name: str,
 ) -> tuple[MaskedExample, ...]:
-    """Per-turn examples for every dialogue; refuses rather than drops when one does not fit.
+    """Per-turn examples for every dialogue.
 
-    A dialogue that exceeds ``max_seq_length`` is a dataset decision, not a training-time
-    accident: run ``tcsft filter`` (or raise the budget) so that what trains is what you
-    reviewed. Silently shrinking the eval set in particular would make its loss lie.
+    A dialogue over ``max_seq_length`` is an error, not a drop: run ``tcsft filter``
+    so that what trains is what you reviewed.
     """
     max_seq_length = config.dataset.max_seq_length
     examples: list[MaskedExample] = []
@@ -186,8 +176,7 @@ def _to_dataset(examples: tuple[MaskedExample, ...]) -> Dataset:
 
 
 def _resolve_device(requested: str) -> str:
-    """The device to train on. A device that was asked for but is not there is an error, not a
-    fallback — the trainer would otherwise pick something else and the log would lie about it."""
+    """The requested device, or the best available for ``auto``. A missing device is an error."""
     cuda = torch.cuda.is_available()
     mps = torch.backends.mps.is_available()
     if requested == "auto":
@@ -201,13 +190,13 @@ def _resolve_device(requested: str) -> str:
 
 def _resolve_dtype(precision: str, device: str) -> torch.dtype:
     if precision == "auto":
-        # CPU bf16 matmuls fall back to slow kernels; accelerators do bf16 natively.
+        # CPU bf16 matmuls fall back to slow kernels.
         precision = "fp32" if device == "cpu" else "bf16"
     return {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
 
 def _check_supported(config: ExperimentConfig, device: str) -> None:
-    """Fail on a CUDA-only option before the trainer does, with the reason."""
+    """Fail on a CUDA-only option before the trainer does."""
     if config.training.load_in_4bit and device != "cuda":
         raise ConfigError(
             f"training.load_in_4bit needs bitsandbytes, which is CUDA-only (resolved device: {device}). "
@@ -232,8 +221,7 @@ def _load_model(config: ExperimentConfig, dtype: torch.dtype) -> PreTrainedModel
         quantization_config=quantization_config,
     )
     if config.training.load_in_4bit:
-        # peft would otherwise switch reentrant checkpointing on regardless of the config;
-        # keep one setting in charge and the same non-reentrant variant the trainer uses.
+        # Keep the config in charge of checkpointing; peft would otherwise enable the reentrant variant.
         model = prepare_model_for_kbit_training(
             model,
             use_gradient_checkpointing=config.training.gradient_checkpointing,
@@ -261,7 +249,7 @@ def _write_run_record(
     counts: dict[str, int],
     example_text: str,
 ) -> None:
-    """Leave enough in output_dir to explain the run later, before anything can crash."""
+    """Enough to explain the run later, written before anything can crash."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
     if config_path is not None:
         shutil.copyfile(config_path, config.output_dir / "config.yaml")

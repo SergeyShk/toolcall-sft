@@ -1,7 +1,5 @@
-"""Masking is tested against small purpose-built tokenizers so the suite runs offline in
-seconds. The Qwen3 tests use the real Qwen3 chat template (tests/templates/qwen3.jinja,
-Apache-2.0, copied verbatim from the Qwen/Qwen3-0.6B tokenizer) on a character-level
-tokenizer: what matters is the text the template produces, not how a BPE splits it."""
+"""Masking tests run on small purpose-built tokenizers, offline. The Qwen3 tests use the real
+Qwen3 chat template (tests/templates/qwen3.jinja, Apache-2.0) on a character-level tokenizer."""
 
 from pathlib import Path
 from typing import Any, cast

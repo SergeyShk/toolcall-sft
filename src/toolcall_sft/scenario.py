@@ -1,27 +1,11 @@
 """The example scenario: send a payment to a saved payee.
 
-Deliberately small. A tool-calling fine-tune is only as good as the agreement
-between the prompt the model trains on and the prompt it is served with, so both
-come from here — one system prompt, three tools, no per-request assembly, nothing
-that has to be reconstructed at serving time.
-
-The prompt lives in ``system_prompt.txt`` next to this module rather than in a
-string literal: it is the file you are most likely to edit, it is the file most
-worth diffing between two runs, and it is what you have to hand the serving side
-verbatim. One detail of "verbatim": the file is read with surrounding whitespace
-stripped, so the trained prompt has no trailing newline. Serve ``SYSTEM_PROMPT``
-from this module, or strip the file the same way — a trailing newline is one
-extra token the model never saw.
-
-Three tools is enough to exercise everything a tool-calling tune has to learn: a
-lookup whose result decides what happens next (``get_payees``), a write that must
-not fire without confirmation and can come back refused (``create_payment``), and
-an exit for everything the model cannot do (``escalate``). That last one carries
-more weight than it looks — without a way out, a narrow model answers questions
-it has no business answering.
-
-Swap this file and its prompt for your own to retarget the pipeline; nothing else
-in the package knows what a payment is.
+One system prompt (``system_prompt.txt``, read with surrounding whitespace
+stripped) and three tools: a lookup whose result decides what happens next, a
+write that must not fire without confirmation and can be declined, and an exit
+for everything else. Training and serving must use both verbatim. Replace this
+module and the prompt file to retarget the pipeline; nothing else in the package
+knows what a payment is.
 """
 
 from importlib.resources import files

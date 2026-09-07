@@ -1,0 +1,130 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="470" viewBox="0 0 1000 470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .t { fill: #111827; font-size: 18px; font-weight: 600; }
+      .s { fill: #6b7280; font-size: 13px; }
+      .h { font-size: 14px; font-weight: 600; }
+      .hs { fill: #6b7280; font-size: 12px; }
+      .role { fill: #6b7280; font-size: 11px; }
+      .mono { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 11px; fill: #1f2937; }
+      .monol { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 11px; fill: #6b7280; }
+      .tag { font-size: 11px; font-weight: 600; }
+      .grey { fill: #f3f4f6; stroke: #d1d5db; }
+      .user { fill: #eff6ff; stroke: #bfdbfe; }
+      .green { fill: #dcfce7; stroke: #86efac; }
+      .amber { fill: #fef3c7; stroke: #fcd34d; }
+      .miss { fill: #fff1f2; stroke: #fca5a5; stroke-dasharray: 3 3; }
+    </style>
+  </defs>
+  <rect x="0.5" y="0.5" width="999" height="469" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+
+  <text x="28" y="38" class="t">How the training text is built</text>
+  <text x="28" y="58" class="s">Qwen3, non-thinking mode. Loss is computed only on the green tokens.</text>
+
+  <!-- ===== left panel: whole-dialogue render ===== -->
+  <text x="28" y="98" class="h" fill="#b91c1c">✗  One sequence per dialogue</text>
+  <text x="28" y="116" class="hs">Only the last assistant turn gets the &lt;think&gt; block the server sends every time.</text>
+
+  <!-- row template: label x=28, slot x=100 w=62, bar x=166..486 -->
+  <!-- 1 system -->
+  <text x="28" y="146" class="role">system</text>
+  <rect x="100" y="132" width="386" height="22" rx="4" class="grey"/>
+  <text x="108" y="147" class="monol">system prompt + tool schemas</text>
+  <!-- 2 user -->
+  <text x="28" y="175" class="role">user</text>
+  <rect x="100" y="161" width="386" height="22" rx="4" class="user"/>
+  <text x="108" y="176" class="mono">Send $250 to Noah Strand</text>
+  <!-- 3 assistant tool call -->
+  <text x="28" y="204" class="role">assistant</text>
+  <rect x="100" y="190" width="62" height="22" rx="4" class="miss"/>
+  <text x="107" y="205" class="tag" fill="#b91c1c">no think</text>
+  <rect x="166" y="190" width="320" height="22" rx="4" class="green"/>
+  <text x="174" y="205" class="mono">&lt;tool_call&gt; get_payees(name="Noah Strand")</text>
+  <!-- 4 tool -->
+  <text x="28" y="233" class="role">tool</text>
+  <rect x="100" y="219" width="386" height="22" rx="4" class="grey"/>
+  <text x="108" y="234" class="monol">[{"payee_id": "pay_2a1e", "name": "Noah Strand"}]</text>
+  <!-- 5 assistant confirm -->
+  <text x="28" y="262" class="role">assistant</text>
+  <rect x="100" y="248" width="62" height="22" rx="4" class="miss"/>
+  <text x="107" y="263" class="tag" fill="#b91c1c">no think</text>
+  <rect x="166" y="248" width="320" height="22" rx="4" class="green"/>
+  <text x="174" y="263" class="mono">Noah Strand, account ending 9176 — send $250?</text>
+  <!-- 6 user -->
+  <text x="28" y="291" class="role">user</text>
+  <rect x="100" y="277" width="386" height="22" rx="4" class="user"/>
+  <text x="108" y="292" class="mono">Yes</text>
+  <!-- 7 assistant tool call -->
+  <text x="28" y="320" class="role">assistant</text>
+  <rect x="100" y="306" width="62" height="22" rx="4" class="miss"/>
+  <text x="107" y="321" class="tag" fill="#b91c1c">no think</text>
+  <rect x="166" y="306" width="320" height="22" rx="4" class="green"/>
+  <text x="174" y="321" class="mono">&lt;tool_call&gt; create_payment(payee_id, 250, USD)</text>
+  <!-- 8 tool -->
+  <text x="28" y="349" class="role">tool</text>
+  <rect x="100" y="335" width="386" height="22" rx="4" class="grey"/>
+  <text x="108" y="350" class="monol">{"payment_id": "pmt_f73a", "status": "sent"}</text>
+  <!-- 9 assistant final -->
+  <text x="28" y="378" class="role">assistant</text>
+  <rect x="100" y="364" width="62" height="22" rx="4" class="amber"/>
+  <text x="107" y="379" class="mono">&lt;think&gt;</text>
+  <rect x="166" y="364" width="320" height="22" rx="4" class="green"/>
+  <text x="174" y="379" class="mono">Sent. Noah Strand will receive $250.</text>
+
+  <text x="28" y="412" class="hs">Result: the model learns "tool call after a bare header, text after &lt;think&gt;".</text>
+  <text x="28" y="428" class="hs">At inference every turn starts with &lt;think&gt;, so it leans towards text.</text>
+
+  <!-- divider -->
+  <line x1="510" y1="86" x2="510" y2="440" stroke="#e5e7eb"/>
+
+  <!-- ===== right panel: per-turn examples ===== -->
+  <text x="534" y="98" class="h" fill="#15803d">✓  One example per assistant turn (this repo)</text>
+  <text x="534" y="116" class="hs">Prompt = what the server renders at that turn, byte for byte.</text>
+
+  <!-- example 1 -->
+  <text x="534" y="146" class="role">example 1 · the first tool call</text>
+  <rect x="534" y="152" width="164" height="22" rx="4" class="grey"/>
+  <text x="542" y="167" class="monol">system + tools + user</text>
+  <rect x="702" y="152" width="62" height="22" rx="4" class="amber"/>
+  <text x="709" y="167" class="mono">&lt;think&gt;</text>
+  <rect x="768" y="152" width="204" height="22" rx="4" class="green"/>
+  <text x="776" y="167" class="mono">⟦&lt;tool_call&gt; get_payees(…)⟧</text>
+
+  <!-- example 2 -->
+  <text x="534" y="206" class="role">example 2 · the read-back</text>
+  <rect x="534" y="212" width="192" height="22" rx="4" class="grey"/>
+  <text x="542" y="227" class="monol">… + tool call + tool result</text>
+  <rect x="730" y="212" width="62" height="22" rx="4" class="amber"/>
+  <text x="737" y="227" class="mono">&lt;think&gt;</text>
+  <rect x="796" y="212" width="176" height="22" rx="4" class="green"/>
+  <text x="804" y="227" class="mono">⟦Noah Strand… send $250?⟧</text>
+
+  <!-- example 3 -->
+  <text x="534" y="266" class="role">example 3 · the write</text>
+  <rect x="534" y="272" width="220" height="22" rx="4" class="grey"/>
+  <text x="542" y="287" class="monol">… + read-back + "Yes"</text>
+  <rect x="758" y="272" width="62" height="22" rx="4" class="amber"/>
+  <text x="765" y="287" class="mono">&lt;think&gt;</text>
+  <rect x="824" y="272" width="148" height="22" rx="4" class="green"/>
+  <text x="832" y="287" class="mono">⟦&lt;tool_call&gt; create…⟧</text>
+
+  <!-- example 4 -->
+  <text x="534" y="326" class="role">example 4 · the report</text>
+  <rect x="534" y="332" width="248" height="22" rx="4" class="grey"/>
+  <text x="542" y="347" class="monol">… + write + {"status": "sent"}</text>
+  <rect x="786" y="332" width="62" height="22" rx="4" class="amber"/>
+  <text x="793" y="347" class="mono">&lt;think&gt;</text>
+  <rect x="852" y="332" width="120" height="22" rx="4" class="green"/>
+  <text x="860" y="347" class="mono">⟦Sent. Noah…⟧</text>
+
+  <text x="534" y="412" class="hs">History inside each prompt has no &lt;think&gt; blocks, exactly like the server's.</text>
+  <text x="534" y="428" class="hs">Cost: prefixes repeat, about 3x tokens per epoch. Same trained tokens.</text>
+
+  <!-- legend -->
+  <rect x="534" y="447" width="14" height="12" rx="2" class="grey"/>
+  <text x="553" y="457" class="hs">prompt, masked</text>
+  <rect x="660" y="447" width="14" height="12" rx="2" class="amber"/>
+  <text x="679" y="457" class="hs">added by the server, masked</text>
+  <rect x="852" y="447" width="14" height="12" rx="2" class="green"/>
+  <text x="871" y="457" class="hs">target, loss</text>
+</svg>

@@ -1,33 +1,18 @@
 """Synthetic dialogues for the example scenario.
 
-The point of a generated dataset is that this repository is runnable the
-minute it is cloned: no trace store, no credentials, no PII review. It is a
-stand-in for real data, not a substitute — a template generator can only teach
-a model the shapes its templates already contain. Point the pipeline at your
-own dialogues as soon as you have them; the schema is the same.
+A stand-in so the repository runs on a fresh clone, not a substitute for real
+data: a template generator only teaches the shapes its templates contain.
 
-What the generator does take seriously is *branch balance*, which is the part
-people get wrong with real data too. About half the dialogues reach a
-``create_payment`` and half deliberately do not: an ambiguous name, a payee
-that is not saved, a customer who changes their mind, a request that has to
-leave through ``escalate``. A model trained only on the happy path learns that
-the write tool is the answer to everything — and one never shown a refusal
-learns to report success it did not get, which is why ``payment_declined``
-fires the write tool and then has to admit it failed.
+What it does take seriously is branch balance. About half the dialogues reach
+``create_payment`` and half must not: an ambiguous name, an unknown payee, a
+change of mind, a request that leaves through ``escalate``, and a write that
+comes back declined and has to be reported as such.
 
-Generation is deterministic in ``seed``: the same seed yields the same corpus,
-and dialogues are deduplicated by content fingerprint as they are built, so a
-requested count is a count of distinct examples. "Distinct" is exact-match
-distinct: two dialogues that differ only in the closing sentence are two
-dialogues here, and they are near-duplicates for any honest evaluation. That is
-a property of template generation, not something a split can repair — see
-docs/DATASET.md.
-
-The pools are finite. The binding one is ``_OUT_OF_SCOPE``: 22 topics x 3
-phrasings x 5 hand-off sentences = 330 distinct dialogues, which at its 16%
-share caps the whole corpus at about 2060 dialogues with the default weights.
-Past that the generator refuses rather than repeating itself; grow the pool or
-reweight the branches.
+Deterministic in ``seed``, deduplicated by content fingerprint while building.
+"Distinct" means exact-match distinct; see docs/DATASET.md on near-duplicates.
+Pools are finite: ``_OUT_OF_SCOPE`` (22 topics x 3 phrasings x 5 hand-offs = 330)
+caps the default-weight corpus around 2060 dialogues, and the generator refuses
+past that rather than repeating itself.
 """
 
 import hashlib
@@ -59,8 +44,7 @@ BRANCH_WEIGHTS: Mapping[str, int] = {
     "payment_declined": 8,
 }
 
-# Ten first names, each shared by two payees — that shared half is what makes the
-# ambiguous-payee branch a genuine lookup collision rather than a scripted one.
+# Ten first names, each shared by two payees: the ambiguous-payee branch needs real collisions.
 _PEOPLE: tuple[tuple[str, str], ...] = (
     ("James", "Whitfield"), ("James", "Okoro"),
     ("Priya", "Raman"), ("Priya", "Kaur"),
@@ -84,8 +68,7 @@ _COMPANIES: tuple[str, ...] = (
 )
 
 _AMOUNTS: tuple[float, ...] = (25.0, 40.0, 75.5, 99.99, 120.0, 175.0, 250.0, 320.4, 450.0, 600.0, 875.25, 1200.0)
-# Declines draw from the same amounts plus a few large ones, so a big number is not a
-# tell: the model has to read the tool result, not guess from the request.
+# Same amounts plus a few large ones, so a big number is not a tell for a decline.
 _DECLINE_AMOUNTS: tuple[float, ...] = (*_AMOUNTS, 1750.0, 2400.0, 3100.0)
 _CURRENCIES: tuple[tuple[str, int], ...] = (("USD", 8), ("EUR", 1), ("CAD", 1))
 _SYMBOLS: Mapping[str, str] = {"USD": "$", "EUR": "€", "CAD": "CA$"}
@@ -99,9 +82,7 @@ _REFERENCES: tuple[str, ...] = (
     "Consulting fees",
 )
 
-# (topic phrasings, the reason to escalate with). Kept wide on purpose: at 16% of
-# the corpus this pool has to supply more distinct dialogues than any single
-# happy-path template, and the generator refuses to repeat itself.
+# (topic phrasings, reason to escalate with). The largest pool by design: see the module docstring.
 _OUT_OF_SCOPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         ("How much tax do I owe this quarter?", "What's my tax bill?", "When is my tax return due?"),
@@ -238,13 +219,11 @@ def branch_names() -> tuple[str, ...]:
 
 
 def generate_dialogues(count: int, *, seed: int = 42, weights: Mapping[str, int] | None = None) -> tuple[Dialogue, ...]:
-    """Build ``count`` distinct dialogues, filling each branch to its share of the weights.
+    """Build ``count`` distinct dialogues, filling each branch to its quota.
 
-    Branches are filled to a quota rather than drawn independently: rejecting a
-    duplicate and redrawing would quietly starve the branches with the smallest
-    template pools, which are exactly the rare behaviours the dataset exists to
-    cover. The returned corpus matches the declared weights exactly, up to the
-    rounding spread over the largest remainders.
+    Quotas rather than independent draws: rejecting duplicates and redrawing would
+    starve the branches with the smallest pools, which are the rare behaviours the
+    dataset exists to cover. Shares match the weights up to largest-remainder rounding.
     """
     if count < 1:
         raise GenerationError("count must be at least 1")
@@ -277,8 +256,7 @@ def generate_dialogues(count: int, *, seed: int = 42, weights: Mapping[str, int]
             built.append((branch, dialogue))
             produced += 1
         if produced < quota:
-            # With a 50x attempt budget the branch has all but certainly been drained, so
-            # `produced` is its pool size and scales to a ceiling for the whole corpus.
+            # After 50x attempts the pool is drained, so `produced` is its size.
             ceiling = produced * total_weight // chosen[branch]
             raise GenerationError(
                 f"branch {branch!r}: only {produced} distinct dialogues available for the "
@@ -515,8 +493,7 @@ def _out_of_scope(rng: random.Random) -> tuple[Message, ...]:
     phrasings, reason = rng.choice(_OUT_OF_SCOPE)
     ask = rng.choice(phrasings)
     handoff = rng.choice(_HANDOFFS)
-    # Derived from the dialogue's own text rather than drawn at random: two dialogues that
-    # read the same get the same ticket, so the fingerprint dedup still sees them as one.
+    # Derived from the text, not random, so identical dialogues still dedup.
     ticket = f"esc_{hashlib.sha256(f'{ask}|{handoff}'.encode()).hexdigest()[:8]}"
     return (
         Message(role=Role.USER, content=ask),

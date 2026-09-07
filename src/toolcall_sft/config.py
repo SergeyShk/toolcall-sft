@@ -1,9 +1,4 @@
-"""Typed experiment configuration loaded from YAML.
-
-Unknown keys are an error, not a no-op: a misspelled ``gradient_checkpointing``
-that silently falls back to its default is exactly the kind of mistake that
-trains successfully and is discovered weeks later.
-"""
+"""Typed experiment configuration loaded from YAML. Unknown keys are errors."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -28,7 +23,7 @@ __all__ = [
 DEFAULT_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 DEVICES = ("auto", "cuda", "mps", "cpu")
 PRECISIONS = ("auto", "bf16", "fp16", "fp32")
-# transformers.SchedulerType, listed statically so this module stays importable without torch.
+# transformers.SchedulerType values, copied so this module stays torch-free.
 LR_SCHEDULERS = (
     "linear",
     "cosine",
@@ -41,9 +36,8 @@ LR_SCHEDULERS = (
     "cosine_with_min_lr",
     "warmup_stable_decay",
 )
-# Passed to the chat template when rendering both the prompt and the target. The default
-# pins Qwen3 to its non-thinking mode, the mode the tuned model has to be served in; a
-# template that does not read the variable ignores it. Set to {} to pass nothing.
+# Passed to the chat template for both prompt and target. Pins Qwen3 to non-thinking
+# mode, the mode the tune is served in; templates that do not read it ignore it.
 DEFAULT_CHAT_TEMPLATE_KWARGS: Mapping[str, bool | int | float | str] = {"enable_thinking": False}
 
 _TOP_LEVEL_KEYS = frozenset({"run_name", "base_model", "output_dir", "dataset", "lora", "training", "tracking"})
@@ -71,7 +65,7 @@ _TRACKING_KEYS = frozenset({"report_to", "mlflow_experiment"})
 
 
 class ConfigError(Exception):
-    """The experiment YAML is missing a key, holds an out-of-range value, or names a key that does not exist."""
+    """The experiment YAML is missing a key, holds an out-of-range value, or names an unknown key."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -220,9 +214,8 @@ def _training_settings(section: Mapping[str, Any]) -> TrainingSettings:
         epochs=_float(section, "epochs", "training", minimum=0.01),
         learning_rate=_float(section, "learning_rate", "training", minimum=1e-8, maximum=1.0),
         per_device_batch_size=batch_size,
-        # Evaluation batches carry the full vocabulary of logits per position; on a laptop the
-        # transformers default of 8 is the first thing to blow the memory budget, so the eval
-        # batch follows the train batch unless asked otherwise.
+        # transformers defaults to 8; eval logits over a 150k vocabulary make that the
+        # first thing to exhaust a laptop's memory.
         eval_batch_size=_int(section, "eval_batch_size", "training", default=batch_size, minimum=1),
         gradient_accumulation_steps=_int(section, "gradient_accumulation_steps", "training", minimum=1),
         warmup_ratio=_float(section, "warmup_ratio", "training", default=0.03, minimum=0.0, maximum=0.5),
@@ -238,7 +231,7 @@ def _training_settings(section: Mapping[str, Any]) -> TrainingSettings:
 
 
 def _tracking_settings(section: Any) -> TrackingSettings:
-    """Tracking is off by default: a fresh clone should train without a tracking server."""
+    """Off by default: a fresh clone trains without a tracking server."""
     if not isinstance(section, Mapping):
         raise ConfigError("'tracking' section must be a mapping")
     _reject_unknown(section, _TRACKING_KEYS, "tracking")

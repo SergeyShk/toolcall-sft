@@ -1,8 +1,7 @@
-"""Data-side CLI: generate, anonymize, validate, split, render and score datasets.
+"""Data-side CLI: generate, anonymize, validate, stats, render, filter, split, evaluate.
 
-Free of training dependencies. The commands that need a tokenizer (``stats``,
-``filter``, ``render``) import transformers when they run, so the rest work on a
-bare install and none of them pays the import on ``--help``.
+Commands that need a tokenizer import transformers when they run; the rest work
+on a bare install.
 """
 
 import json
@@ -61,11 +60,7 @@ def main() -> None:
 @click.option("--count", type=click.IntRange(min=1), default=1000, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True, help="Same seed, same corpus.")
 def generate(out_path: Path, count: int, seed: int) -> None:
-    """Write synthetic dialogues of the example payment scenario.
-
-    A stand-in so the pipeline is runnable on a fresh clone; replace it with
-    your own dialogues in the same schema as soon as you have them.
-    """
+    """Write synthetic dialogues for the example payment scenario."""
     try:
         dialogues = generate_dialogues(count, seed=seed)
     except GenerationError as error:
@@ -85,9 +80,7 @@ def generate(out_path: Path, count: int, seed: int) -> None:
 def anonymize(path: Path, out_path: Path, salt: str, extra_terms: tuple[str, ...]) -> None:
     """Pseudonymize dialogues deterministically and report what was replaced.
 
-    For dialogues captured from a real system. Training bakes data into weights,
-    so run this before anything else touches them — and read the caveats in
-    ``anonymizer.py``: the pass is mechanical, not a guarantee.
+    Heuristic, not a guarantee; see anonymizer.py and review a sample.
     """
     dialogues = _load(path)
     anonymizer = Anonymizer(salt=salt, extra_terms=extra_terms)
@@ -132,10 +125,9 @@ def validate(path: Path) -> None:
 def filter_dataset(
     path: Path, out_path: Path, max_seq_length: int | None, base_model: str | None, config_path: Path | None
 ) -> None:
-    """Drop dialogues whose longest example does not fit max_seq_length under the base model's tokenizer.
+    """Drop dialogues whose longest example does not fit max_seq_length.
 
-    Uses the same per-turn tokenization path as training, so what passes here is
-    exactly what the trainer will accept.
+    Same per-turn tokenization as training, so what passes is what the trainer accepts.
     """
     dialogues = _load(path)
     settings = _TokenizerSettings.resolve(config_path, base_model=base_model, max_seq_length=max_seq_length)
@@ -167,8 +159,7 @@ def filter_dataset(
 def split(path: Path, train_out: Path, eval_out: Path, eval_fraction: float, salt: str) -> None:
     """Deduplicate a dataset and split it into train/eval by content hash.
 
-    The hash decides the side per dialogue, so the eval set is not stratified: the
-    per-branch breakdown printed at the end is there to be checked, not assumed.
+    Not stratified: check the per-branch breakdown it prints.
     """
     try:
         dialogues = load_dialogues(path)
@@ -195,12 +186,7 @@ def split(path: Path, train_out: Path, eval_out: Path, eval_fraction: float, sal
 @_config_option
 @click.option("--top", default=5, show_default=True, help="How many longest dialogues to list.")
 def stats(path: Path, base_model: str | None, config_path: Path | None, top: int) -> None:
-    """Token-length statistics of a dataset under the base model's tokenizer.
-
-    Sizes are per training example (one per assistant turn): the longest example of
-    a dialogue is what has to fit max_seq_length, the sum over its examples is what
-    an epoch costs, and the target tokens are the only ones that carry loss.
-    """
+    """Token-length statistics under the base model's tokenizer, per training example."""
     dialogues = _load(path)
     settings = _TokenizerSettings.resolve(config_path, base_model=base_model, max_seq_length=None)
     report = compute_token_stats(settings.tokenizer(), dialogues, chat_template_kwargs=settings.chat_template_kwargs)
@@ -252,12 +238,9 @@ def stats(path: Path, base_model: str | None, config_path: Path | None, top: int
 def render(
     path: Path, dialogue_id: str | None, turn: int | None, base_model: str | None, config_path: Path | None
 ) -> None:
-    """Print a dialogue exactly as the model trains on it: one example per assistant turn.
+    """Print a dialogue as the model trains on it: one example per assistant turn, loss tokens in ⟦ ⟧.
 
-    Each example is decoded from its token ids; the tokens that carry loss are
-    wrapped in ⟦ ⟧. Everything outside the brackets is what the inference server
-    will build as the prompt at that turn, byte for byte — if it is not, the
-    tune is learning something the server will never ask for.
+    Everything outside the brackets is the prompt the server builds at that turn.
     """
     dialogues = _load(path)
     if dialogue_id is None:
@@ -308,8 +291,7 @@ def evaluate(path: Path) -> None:
 
 
 class _TokenizerSettings:
-    """Where the tokenizer-dependent commands get their settings: flags first, then the experiment
-    config, then the defaults of the shipped Qwen3 config — so `tcsft stats` and the trainer agree."""
+    """Settings for the tokenizer-dependent commands: flags, then --config, then the shipped Qwen3 defaults."""
 
     __slots__ = ("base_model", "max_seq_length", "chat_template_kwargs")
 
@@ -345,7 +327,7 @@ class _TokenizerSettings:
 
     def tokenizer(self) -> "PreTrainedTokenizerBase":
         try:
-            from transformers import AutoTokenizer  # imported here: only these commands need it
+            from transformers import AutoTokenizer
         except ImportError as error:
             raise click.ClickException(
                 "this command renders the chat template and needs transformers; install the 'train' or "
@@ -362,8 +344,7 @@ def _load(path: Path) -> tuple[Dialogue, ...]:
 
 
 def _branch_counts(dialogues: tuple[Dialogue, ...]) -> Counter[str]:
-    """Dialogues per branch, where the branch is whatever precedes the last dash of the id — the
-    generator's convention; ids without a dash count under themselves."""
+    """Dialogues per branch, the branch being the dialogue_id up to its last dash."""
     return Counter(dialogue.dialogue_id.rsplit("-", 1)[0] for dialogue in dialogues)
 
 

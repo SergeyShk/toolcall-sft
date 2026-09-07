@@ -1,14 +1,9 @@
-"""Dataset schema: a dialogue is the unit of training, deduplication and splitting.
+"""Dialogue schema: the unit of training, deduplication and splitting.
 
-Storage format (one JSON object per JSONL line) keeps tool calls flat
-(``{"name": ..., "arguments": {...}}``); ``chat_messages`` converts them to the
-OpenAI-style nested form that HF chat templates expect.
-
-Tool-call ids are optional. Qwen and Llama templates ignore them; Mistral's
-requires a nine-character id on every call and a matching ``tool_call_id`` on
-every result. When a dialogue carries them they are stored, validated against
-the pending calls and passed through to the template; when it does not, nothing
-is invented — a template that needs ids has to be fed data that has them.
+JSONL storage keeps tool calls flat (``{"name", "arguments"}``); ``chat_messages``
+converts them to the OpenAI-style nested form chat templates expect. Tool-call
+ids are optional and passed through when present (Mistral templates need them,
+Qwen and Llama ignore them); nothing is invented when they are absent.
 """
 
 import hashlib
@@ -126,10 +121,8 @@ def to_chat_record(dialogue: Dialogue) -> dict[str, Any]:
 
 
 def content_fingerprint(dialogue: Dialogue) -> str:
-    """Content-based identity for deduplication and split assignment: ignores ``dialogue_id``
-    and tool-call ids, normalises whitespace, and is stable across argument key order. Tools
-    are part of the identity — they render into the training prompt, so a different tool
-    catalogue is a different example."""
+    """Identity for dedup and splitting: ignores ``dialogue_id`` and tool-call ids, normalises
+    whitespace and argument order. Tools are included because they render into the prompt."""
     payload = {
         "messages": [
             [
@@ -220,9 +213,7 @@ def _validate_structure(dialogue_id: str, messages: tuple[Message, ...]) -> None
                 raise DatasetError(f"{where}: tool_call_id {message.tool_call_id!r} matches no pending tool call")
             continue
         if pending:
-            # A dialogue may end on a tool call (the call itself is the target), but a user or
-            # assistant turn must not arrive while results are outstanding: the template would
-            # render a call the model never saw answered.
+            # A dialogue may end on a tool call, but no other turn may follow an unanswered one.
             raise DatasetError(
                 f"{where}: {len(pending)} tool call(s) from the previous assistant turn have no tool result"
             )

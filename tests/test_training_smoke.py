@@ -1,10 +1,6 @@
-"""End-to-end smoke test of the training path on a tiny random Qwen3 built in the test.
+"""End-to-end smoke test of run_sft and merge_adapter on a tiny random Qwen3 built in the test.
 
-Runs on CPU in seconds and fully offline: the model is two layers of width 32 over a
-character-level vocabulary, saved to a temporary directory the config points at. It
-exercises everything after the tokenizer download — per-turn dataset construction,
-LoRA wrapping, the Trainer, evaluation, saving the adapter, and the run record — which
-is the part unit tests cannot reach. Skipped when torch is not installed.
+CPU, offline, a few seconds. Skipped when torch is not installed.
 """
 
 import json

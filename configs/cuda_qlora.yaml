@@ -1,11 +1,5 @@
-# Single-GPU CUDA run: Qwen3-8B in 4-bit (QLoRA), fused cross-entropy, MLflow.
-# Needs `uv sync --group cuda` for bitsandbytes and liger-kernel — both Linux/CUDA
-# only, and `tcsft-train` refuses them on any other device rather than failing
-# somewhere inside the trainer.
-#
-# This config has not been run end to end by the author (no CUDA machine at hand);
-# the code paths it exercises are the standard transformers + peft ones, but treat
-# the first run as a smoke test and read the log.
+# Qwen3-8B in 4-bit (QLoRA) with Liger kernels on one CUDA GPU, MLflow on.
+# Needs `uv sync --group cuda`. Not yet run end to end by the author.
 run_name: payments-qwen3-8b-qlora
 base_model: Qwen/Qwen3-8B
 output_dir: outputs/payments-qwen3-8b-qlora

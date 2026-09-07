@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="230" viewBox="0 0 1000 230" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .grp { fill: #f8fafc; stroke: #e2e8f0; stroke-dasharray: 4 3; }
+      .gl { fill: #64748b; font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+      .box { fill: #ffffff; stroke: #cbd5e1; }
+      .boxg { fill: #f0fdf4; stroke: #86efac; }
+      .cmd { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 12px; fill: #111827; font-weight: 600; }
+      .sub { font-size: 11px; fill: #6b7280; }
+      .art { font-family: 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace; font-size: 11px; fill: #475569; }
+      .arrow { stroke: #94a3b8; stroke-width: 1.5; fill: none; marker-end: url(#head); }
+    </style>
+    <marker id="head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="999" height="229" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+
+  <!-- groups -->
+  <rect x="20" y="40" width="612" height="150" rx="10" class="grp"/>
+  <text x="34" y="60" class="gl">DATA SIDE · tcsft · no torch needed</text>
+  <rect x="648" y="40" width="332" height="150" rx="10" class="grp"/>
+  <text x="662" y="60" class="gl">TRAINING SIDE · tcsft-train · torch + peft</text>
+
+  <!-- boxes: y=84 h=52 -->
+  <rect x="36" y="84" width="130" height="52" rx="8" class="box"/>
+  <text x="101" y="106" text-anchor="middle" class="cmd">generate</text>
+  <text x="101" y="123" text-anchor="middle" class="sub">synthetic dialogues</text>
+
+  <rect x="186" y="84" width="130" height="52" rx="8" class="box"/>
+  <text x="251" y="106" text-anchor="middle" class="cmd">validate · stats</text>
+  <text x="251" y="123" text-anchor="middle" class="sub">schema, token lengths</text>
+
+  <rect x="336" y="84" width="130" height="52" rx="8" class="boxg"/>
+  <text x="401" y="106" text-anchor="middle" class="cmd">render</text>
+  <text x="401" y="123" text-anchor="middle" class="sub">see what trains</text>
+
+  <rect x="486" y="84" width="130" height="52" rx="8" class="box"/>
+  <text x="551" y="106" text-anchor="middle" class="cmd">split</text>
+  <text x="551" y="123" text-anchor="middle" class="sub">dedup + content hash</text>
+
+  <rect x="664" y="84" width="140" height="52" rx="8" class="boxg"/>
+  <text x="734" y="106" text-anchor="middle" class="cmd">train</text>
+  <text x="734" y="123" text-anchor="middle" class="sub">LoRA or QLoRA</text>
+
+  <rect x="824" y="84" width="140" height="52" rx="8" class="box"/>
+  <text x="894" y="106" text-anchor="middle" class="cmd">merge</text>
+  <text x="894" y="123" text-anchor="middle" class="sub">standalone weights</text>
+
+  <!-- arrows -->
+  <path d="M166,110 L184,110" class="arrow"/>
+  <path d="M316,110 L334,110" class="arrow"/>
+  <path d="M466,110 L484,110" class="arrow"/>
+  <path d="M616,110 L662,110" class="arrow"/>
+  <path d="M804,110 L822,110" class="arrow"/>
+
+  <!-- artifacts -->
+  <text x="101" y="164" text-anchor="middle" class="art">data/all.jsonl</text>
+  <text x="551" y="164" text-anchor="middle" class="art">train.jsonl · eval.jsonl</text>
+  <text x="734" y="164" text-anchor="middle" class="art">adapter/ · example.txt</text>
+  <text x="894" y="164" text-anchor="middle" class="art">merged/</text>
+
+  <!-- serving -->
+  <text x="500" y="215" text-anchor="middle" class="sub">serve merged/ with vLLM, Ollama or llama.cpp: same chat template, same enable_thinking=false</text>
+</svg>
