@@ -47,6 +47,8 @@ class TurnRecord:
     """Tool-call blocks in the output that did not parse into a call."""
     invalid: int = 0
     """Predicted calls that parsed but fail their tool's schema."""
+    truncated: bool = False
+    """Generation stopped at the token budget rather than on an end-of-turn token."""
 
     @property
     def correct(self) -> bool:
@@ -157,6 +159,8 @@ class ToolCallReport:
     calls: CallTotals
     malformed_calls: int
     invalid_calls: int
+    truncated_turns: int
+    """Turns cut off at the token budget; to the rest of the report they look like a plain reply."""
     by_tool: tuple[ToolReport, ...]
     by_group: tuple[GroupReport, ...]
 
@@ -190,6 +194,7 @@ class ToolCallReport:
             "turns": self.turns,
             "correct_turns": self.correct_turns,
             "turn_accuracy": _round(self.turn_accuracy),
+            "truncated_turns": self.truncated_turns,
             "decisions": {
                 "expected_call_turns": self.expected_call_turns,
                 "expected_text_turns": self.expected_text_turns,
@@ -256,6 +261,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
     missed_calls = 0
     malformed_calls = 0
     invalid_calls = 0
+    truncated_turns = 0
     for turn in turns:
         comparison = compare_tool_calls(turn.expected, turn.predicted)
         overall.add(comparison)
@@ -272,6 +278,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
         missed_calls += missed
         malformed_calls += turn.malformed
         invalid_calls += turn.invalid
+        truncated_turns += turn.truncated
         if turn.dialogue_id is not None:
             group = per_group.setdefault(branch_of(turn.dialogue_id), _GroupSums())
             group.turns += 1
@@ -287,6 +294,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
         calls=overall.freeze(),
         malformed_calls=malformed_calls,
         invalid_calls=invalid_calls,
+        truncated_turns=truncated_turns,
         by_tool=tuple(ToolReport(name=name, calls=sums.freeze()) for name, sums in sorted(per_tool.items())),
         by_group=tuple(
             GroupReport(
@@ -319,6 +327,10 @@ def format_report(report: ToolCallReport) -> str:
         f"exact precision {_ratio(report.calls.exact_precision)}  recall {_ratio(report.calls.exact_recall)} | "
         f"argument accuracy {_ratio(report.calls.argument_accuracy)}",
     ]
+    if report.truncated_turns:
+        lines.append(
+            f"truncated: {report.truncated_turns} of {report.turns} turns hit the token budget before finishing"
+        )
     if report.by_tool:
         lines.append("by tool:")
         rows = [

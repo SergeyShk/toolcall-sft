@@ -8,9 +8,22 @@ def _call(name: str, /, **arguments: object) -> ToolCall:
 
 
 def _turn(
-    expected: list[ToolCall], predicted: list[ToolCall], *, dialogue_id: str | None = None, **rest: int
+    expected: list[ToolCall],
+    predicted: list[ToolCall],
+    *,
+    dialogue_id: str | None = None,
+    malformed: int = 0,
+    invalid: int = 0,
+    truncated: bool = False,
 ) -> TurnRecord:
-    return TurnRecord(expected=tuple(expected), predicted=tuple(predicted), dialogue_id=dialogue_id, **rest)
+    return TurnRecord(
+        expected=tuple(expected),
+        predicted=tuple(predicted),
+        dialogue_id=dialogue_id,
+        malformed=malformed,
+        invalid=invalid,
+        truncated=truncated,
+    )
 
 
 def test_compare_tool_calls_exact_match() -> None:
@@ -186,6 +199,19 @@ def test_report_dashes_a_tool_the_model_never_called() -> None:
 
     row = next(line for line in format_report(report).splitlines() if line.strip().startswith("escalate"))
     assert row.split() == ["escalate", "1", "0", "0", "—", "0.000", "—"]
+
+
+def test_evaluate_turns_counts_truncated_turns_and_names_them_in_the_report() -> None:
+    report = evaluate_turns([_turn([_call("a")], [], truncated=True), _turn([_call("a")], [_call("a")])])
+
+    assert report.truncated_turns == 1
+    assert report.missed_calls == 1  # a cut-off turn still looks like a reply
+    assert report.as_dict()["truncated_turns"] == 1
+    assert "truncated: 1 of 2 turns hit the token budget" in format_report(report)
+
+
+def test_report_says_nothing_about_truncation_when_there_is_none() -> None:
+    assert "truncated" not in format_report(evaluate_turns([_turn([], [])]))
 
 
 def test_turn_record_correct_needs_exact_calls_and_nothing_malformed() -> None:

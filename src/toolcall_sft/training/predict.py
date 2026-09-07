@@ -75,6 +75,13 @@ class PredictionSettings:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _Generated:
+    text: str
+    truncated: bool
+    """Generation stopped at max_new_tokens rather than on an end-of-turn token."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PredictionRun:
     turns: tuple[TurnRecord, ...]
     dialogues: int
@@ -116,14 +123,17 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
         )
 
     model = _load_model(settings.model, dtype=dtype, device=device)
+    stop_ids = _stop_token_ids(model, tokenizer)
     generation = GenerationConfig(
         max_new_tokens=settings.max_new_tokens,
         do_sample=False,
         pad_token_id=pad_token_id,
-        eos_token_id=_stop_token_ids(model, tokenizer),
+        eos_token_id=stop_ids,
     )
     started = time.perf_counter()
-    outputs = _generate_all(model, tokenizer, prompts, generation, batch_size=settings.batch_size, device=device)
+    outputs = _generate_all(
+        model, tokenizer, prompts, generation, batch_size=settings.batch_size, device=device, stop_ids=stop_ids
+    )
     seconds = time.perf_counter() - started
 
     records: list[dict[str, Any]] = []
@@ -131,10 +141,10 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
     position = 0
     for dialogue, examples in tokenized:
         for example in examples:
-            raw = outputs[position]
+            generated = outputs[position]
             position += 1
             message = dialogue.messages[example.turn_index]
-            parsed = parse_assistant_output(raw)
+            parsed = parse_assistant_output(generated.text)
             problems = check_tool_calls(parsed.tool_calls, dialogue.tools)
             records.append(
                 {
@@ -148,7 +158,8 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
                     ],
                     "predicted_content": parsed.content,
                     "malformed": list(parsed.malformed),
-                    "raw_output": raw,
+                    "truncated": generated.truncated,
+                    "raw_output": generated.text,
                 }
             )
             turns.append(
@@ -159,9 +170,10 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
                     turn_index=example.turn_index,
                     malformed=len(parsed.malformed),
                     invalid=sum(1 for found in problems if found),
+                    truncated=generated.truncated,
                 )
             )
-    generated_tokens = sum(len(tokenizer(raw, add_special_tokens=False)["input_ids"]) for raw in outputs)
+    generated_tokens = sum(len(tokenizer(item.text, add_special_tokens=False)["input_ids"]) for item in outputs)
     run = PredictionRun(
         turns=tuple(turns), dialogues=len(tokenized), generated_tokens=generated_tokens, seconds=seconds
     )
@@ -224,16 +236,18 @@ def _generate_all(
     *,
     batch_size: int,
     device: str,
-) -> list[str]:
+    stop_ids: Sequence[int],
+) -> list[_Generated]:
     """Greedy continuations in prompt order. Longest prompts go first so memory problems show early."""
     order = sorted(range(len(prompts)), key=lambda index: -len(prompts[index]))
-    outputs: list[str] = [""] * len(prompts)
+    outputs = [_Generated(text="", truncated=False)] * len(prompts)
     batches = [order[start : start + batch_size] for start in range(0, len(order), batch_size)]
     for number, batch in enumerate(batches, start=1):
         started = time.perf_counter()
-        texts = _generate_batch(model, tokenizer, [prompts[index] for index in batch], generation, device=device)
-        for index, text in zip(batch, texts, strict=True):
-            outputs[index] = text
+        rows = [prompts[index] for index in batch]
+        items = _generate_batch(model, tokenizer, rows, generation, device=device, stop_ids=stop_ids)
+        for index, item in zip(batch, items, strict=True):
+            outputs[index] = item
         logger.info("batch %d/%d: %d turns in %.1f s", number, len(batches), len(batch), time.perf_counter() - started)
     return outputs
 
@@ -245,7 +259,8 @@ def _generate_batch(
     generation: GenerationConfig,
     *,
     device: str,
-) -> list[str]:
+    stop_ids: Sequence[int],
+) -> list[_Generated]:
     pad = _token_id(tokenizer.pad_token_id)
     assert pad is not None  # checked in run_predictions
     width = max(len(prompt) for prompt in prompts)
@@ -264,8 +279,16 @@ def _generate_batch(
             use_model_defaults=False,
         )
     continuations = generated[:, width:].tolist()
+    stop = set(stop_ids)
     # The stop token and any padding after it are special tokens; <tool_call> and <think> are not.
-    return [tokenizer.decode(ids, skip_special_tokens=True) for ids in continuations]
+    # A row without a stop token in it ran out of budget instead of finishing.
+    return [
+        _Generated(
+            text=tokenizer.decode(ids, skip_special_tokens=True),
+            truncated=not any(token in stop for token in ids),
+        )
+        for ids in continuations
+    ]
 
 
 def _call_json(call: ToolCall) -> dict[str, Any]:

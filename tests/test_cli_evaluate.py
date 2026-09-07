@@ -37,6 +37,15 @@ def _records() -> list[dict[str, object]]:
             ),
         },
         {"dialogue_id": "cancelled-00002", "turn_index": 4, "expected": [], "predicted": [], "malformed": ["{oops"]},
+        # Cut off at the token budget: no call, and the report has to say why.
+        {
+            "dialogue_id": "out_of_scope-00004",
+            "turn_index": 2,
+            "expected": [{"name": "escalate", "arguments": {"reason": "card dispute"}}],
+            "predicted": [],
+            "truncated": True,
+            "raw_output": "Let me look into that for you, it may take a",
+        },
     ]
 
 
@@ -47,10 +56,11 @@ def test_evaluate_prints_the_text_report(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["evaluate", str(path)])
 
     assert result.exit_code == 0, result.output
-    assert result.output.startswith("turns: 3, correct: 0 (0.0%)")
-    assert "missed calls 1" in result.output
+    assert result.output.startswith("turns: 4, correct: 0 (0.0%)")
+    assert "missed calls 2" in result.output
     assert "false fires 1" in result.output
     assert "1 malformed, 1 invalid" in result.output
+    assert "truncated: 1 of 4 turns hit the token budget" in result.output
     assert "  cancelled " in result.output and "  happy_path " in result.output
 
 
@@ -61,7 +71,8 @@ def test_evaluate_json_and_show(tmp_path: Path) -> None:
     result = CliRunner().invoke(main, ["evaluate", str(path), "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert data["turns"] == 3
+    assert data["turns"] == 4
+    assert data["truncated_turns"] == 1
     assert data["calls"]["invalid"] == 1
     assert data["by_group"]["happy_path"]["turns"] == 1
 
@@ -74,6 +85,10 @@ def test_evaluate_json_and_show(tmp_path: Path) -> None:
     assert "[argument 'currency' must be one of" in result.output
     assert "raw: '<tool_call>" in result.output
     assert "cancelled-00002" not in result.output  # --show 2 stops after two
+
+    result = CliRunner().invoke(main, ["evaluate", str(path), "--show", "4"])
+    assert result.exit_code == 0, result.output
+    assert "--- out_of_scope-00004, assistant message 2 (truncated)" in result.output
 
 
 def test_evaluate_rejects_a_bad_record(tmp_path: Path) -> None:

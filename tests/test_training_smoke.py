@@ -153,7 +153,7 @@ training:
         assert records[0]["expected"] == [{"name": "get_payees", "arguments": {"name": "Noah"}}]
         assert records[1]["expected"] == [] and records[1]["expected_content"] == "Noah - send $50?"
         assert all(isinstance(record["raw_output"], str) for record in records)
-        assert all(record.keys() >= {"predicted", "predicted_content", "malformed"} for record in records)
+        assert all(record.keys() >= {"predicted", "predicted_content", "malformed", "truncated"} for record in records)
         meta = json.loads(predictions_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
         assert meta["model"] == str(model_dir)
         assert meta["decoding"] == {"greedy": True, "max_new_tokens": 8, "batch_size": 3}

@@ -288,7 +288,8 @@ def evaluate(path: Path, as_json: bool, show: int) -> None:
 
     Input: the JSONL `tcsft-train predict` writes. The minimum is
     {"expected": [{"name", "arguments"}], "predicted": [...]}; "dialogue_id" adds the
-    per-branch breakdown, "malformed" and per-call "problems" feed the validity rate.
+    per-branch breakdown, "malformed" and per-call "problems" feed the validity rate,
+    "truncated" marks a turn cut off at the token budget.
     """
     turns: list[TurnRecord] = []
     raw_turns: list[dict[str, Any]] = []
@@ -304,6 +305,7 @@ def evaluate(path: Path, as_json: bool, show: int) -> None:
                 turn_index=_opt_int(raw, "turn_index", where),
                 malformed=_malformed_count(raw.get("malformed"), where),
                 invalid=invalid,
+                truncated=_opt_bool(raw, "truncated", where),
             )
         )
         raw_turns.append(raw)
@@ -314,7 +316,8 @@ def evaluate(path: Path, as_json: bool, show: int) -> None:
     wrong = [(turn, raw) for turn, raw in zip(turns, raw_turns, strict=True) if not turn.correct]
     for turn, raw in wrong[:show]:
         where = "?" if turn.turn_index is None else str(turn.turn_index)
-        click.echo(f"--- {turn.dialogue_id or '?'}, assistant message {where}")
+        cut = " (truncated)" if turn.truncated else ""
+        click.echo(f"--- {turn.dialogue_id or '?'}, assistant message {where}{cut}")
         click.echo(f"expected:  {_describe_calls(raw.get('expected'))}")
         click.echo(f"predicted: {_describe_calls(raw.get('predicted'))}")
         if raw.get("malformed"):
@@ -428,6 +431,13 @@ def _malformed_count(value: object, where: str) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     raise click.ClickException(f"{where}: 'malformed' must be a list of strings or a count")
+
+
+def _opt_bool(raw: Mapping[str, Any], key: str, where: str) -> bool:
+    value = raw.get(key, False)
+    if not isinstance(value, bool):
+        raise click.ClickException(f"{where}: '{key}' must be a boolean")
+    return value
 
 
 def _opt_str(raw: Mapping[str, Any], key: str, where: str) -> str | None:

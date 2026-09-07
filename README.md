@@ -238,6 +238,8 @@ right call, and `tcsft-train predict` answers it per turn:
   tool's schema: unknown tool, missing required argument, undeclared argument, wrong type, value
   outside an `enum`. A dialogue that declares no `tools` is checked against nothing; its calls are
   recorded unchecked.
+- **Truncated turns.** Generation that hit `--max-new-tokens` instead of an end-of-turn token,
+  counted separately: to the scorer a cut-off turn looks like a plain reply.
 
 On the held-out split of the default run (33 dialogues, 106 assistant turns), greedy, scored on an
 M3 Pro. The middle column is the same config trained with the whole-dialogue rendering the diagram
@@ -259,7 +261,7 @@ low-entropy, so a tune should sit near the ceiling on it; the table that matters
 real dialogues.
 
 `predictions.jsonl` has one record per turn: expected and predicted calls, the schema problems of
-each predicted call, the raw output, and the content on both sides; a `.meta.json` next to it
+each predicted call, whether generation was cut off, the raw output, and the content on both sides; a `.meta.json` next to it
 records the model, decoding, versions and git state. `tcsft evaluate --show 10` prints the wrong
 turns with the raw output, `--json` the full report. The format is plain enough to write from any
 other harness and score the same way; the minimum is `{"expected": [...], "predicted": [...]}` per
