@@ -49,6 +49,22 @@ def test_parse_arguments_default_to_empty() -> None:
     assert turn.tool_calls == (ToolCall(name="escalate", arguments={}),)
 
 
+def test_parse_arguments_serialised_as_a_json_string() -> None:
+    turn = parse_assistant_output(
+        '<tool_call>{"name": "get_payees", "arguments": "{\\"name\\": \\"Tom\\"}"}</tool_call>'
+    )
+
+    assert turn.tool_calls == (ToolCall(name="get_payees", arguments={"name": "Tom"}),)
+    assert turn.malformed == ()
+
+
+def test_parse_argument_string_that_is_not_a_json_object_is_malformed() -> None:
+    turn = parse_assistant_output('<tool_call>{"name": "x", "arguments": "not json"}</tool_call>')
+
+    assert turn.tool_calls == ()
+    assert len(turn.malformed) == 1
+
+
 def test_parse_unclosed_block_swallows_the_rest_as_malformed() -> None:
     turn = parse_assistant_output('Sure.\n<tool_call>\n{"name": "get_payees", "arguments": {"name": "To')
 

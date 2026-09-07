@@ -4,7 +4,8 @@ whether each one fits the schema of the tool it names.
 Hermes-style tool calls, one JSON object per ``<tool_call>``…``</tool_call>`` block
 (Qwen2.5/Qwen3, Hermes; vLLM's ``hermes`` parser reads the same thing). A block that
 is not a JSON object with a ``name`` is kept as ``malformed`` rather than dropped:
-the model tried to act, and a scorer needs to know that.
+the model tried to act, and a scorer needs to know that. ``arguments`` may be an
+object or the JSON string the OpenAI format serialises it to.
 
 The schema check covers what a tool router would reject before running anything:
 unknown tool, missing required argument, undeclared argument, wrong primitive type,
@@ -112,10 +113,19 @@ def _parse_call(body: str) -> ToolCall | None:
     if not isinstance(raw, dict):
         return None
     name = raw.get("name")
-    arguments = raw.get("arguments", {})
-    if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+    arguments = _arguments(raw.get("arguments", {}))
+    if not isinstance(name, str) or not name or arguments is None:
         return None
     return ToolCall(name=name, arguments=arguments)
+
+
+def _arguments(value: object) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
 
 
 def _parameters_for(name: str, tools: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
