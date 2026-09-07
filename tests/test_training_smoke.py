@@ -1,4 +1,5 @@
-"""End-to-end smoke test of run_sft and merge_adapter on a tiny random Qwen3 built in the test.
+"""End-to-end smoke test of run_sft, merge_adapter and run_predictions on a tiny random Qwen3
+built in the test.
 
 CPU, offline, a few seconds. Skipped when torch is not installed.
 """
@@ -10,13 +11,15 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from click.testing import CliRunner  # noqa: E402
 from tokenizers import Regex, Tokenizer, decoders  # noqa: E402
 from tokenizers.models import WordLevel  # noqa: E402
 from tokenizers.pre_tokenizers import Split  # noqa: E402
 from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM  # noqa: E402
 
 from toolcall_sft import Dialogue, Message, Role, ToolCall, load_experiment_config, write_dialogues  # noqa: E402
-from toolcall_sft.training import merge_adapter, run_sft  # noqa: E402
+from toolcall_sft.cli import main as tcsft  # noqa: E402
+from toolcall_sft.training import PredictionSettings, merge_adapter, run_predictions, run_sft  # noqa: E402
 
 QWEN3_TEMPLATE = (Path(__file__).parent / "templates" / "qwen3.jinja").read_text(encoding="utf-8")
 
@@ -31,11 +34,14 @@ def _tiny_model_and_tokenizer(directory: Path) -> None:
     backend = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
     backend.pre_tokenizer = Split(Regex(r"[\s\S]"), behavior="isolated")
     backend.decoder = decoders.Fuse()
-    tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]", pad_token="<|pad|>")
+    # eos is the end-of-turn token, as in the real Qwen3 tokenizer; generation must be able to stop.
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend, unk_token="[UNK]", pad_token="<|pad|>", eos_token="<|im_end|>"
+    )
     tokenizer.chat_template = QWEN3_TEMPLATE
     tokenizer.save_pretrained(str(directory))
     config = Qwen3Config(
-        vocab_size=len(vocab),
+        vocab_size=len(tokenizer),
         hidden_size=32,
         intermediate_size=64,
         num_hidden_layers=2,
@@ -116,3 +122,40 @@ training:
 
     assert (merged_dir / "model.safetensors").exists()
     assert (merged_dir / "chat_template.jinja").exists()
+
+    # The adapter replays on top of its base; the merged checkpoint replays on its own.
+    for model_dir, name in ((adapter_dir, "adapter"), (merged_dir, "merged")):
+        settings = PredictionSettings(
+            model=str(model_dir),
+            max_seq_length=512,
+            chat_template_kwargs={"enable_thinking": False},
+            max_new_tokens=8,
+            batch_size=3,  # 4 turns: one full batch and one short one
+            device="cpu",
+        )
+        predictions_path = tmp_path / f"{name}.predictions.jsonl"
+
+        run = run_predictions(settings, dialogues[4:], out_path=predictions_path)
+
+        assert run.dialogues == 2
+        assert len(run.turns) == 4
+        assert 0 < run.generated_tokens <= 4 * 8
+        records = [json.loads(line) for line in predictions_path.read_text(encoding="utf-8").splitlines()]
+        assert [(record["dialogue_id"], record["turn_index"]) for record in records] == [
+            ("smoke-4", 2),
+            ("smoke-4", 4),
+            ("smoke-5", 2),
+            ("smoke-5", 4),
+        ]
+        assert records[0]["expected"] == [{"name": "get_payees", "arguments": {"name": "Noah"}}]
+        assert records[1]["expected"] == [] and records[1]["expected_content"] == "Noah - send $50?"
+        assert all(isinstance(record["raw_output"], str) for record in records)
+        assert all(record.keys() >= {"predicted", "predicted_content", "malformed"} for record in records)
+        meta = json.loads(predictions_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        assert meta["model"] == str(model_dir)
+        assert meta["decoding"] == {"greedy": True, "max_new_tokens": 8, "batch_size": 3}
+        assert meta["resolved"] == {"device": "cpu", "dtype": "float32"}
+
+        scored = CliRunner().invoke(tcsft, ["evaluate", str(predictions_path), "--show", "1"])
+        assert scored.exit_code == 0, scored.output
+        assert scored.output.startswith("turns: 4, correct: ")

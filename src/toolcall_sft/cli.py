@@ -17,7 +17,7 @@ from .config import DEFAULT_CHAT_TEMPLATE_KWARGS, ConfigError, load_experiment_c
 from .dataset import dataset_stats, dedup_dialogues, load_dialogues, split_dialogues, write_dialogues
 from .generate import GenerationError, branch_names, generate_dialogues
 from .masking import TemplateCompatibilityError, render_example, tokenize_dialogue
-from .metrics import ToolCallComparison, aggregate_comparisons, compare_tool_calls
+from .metrics import TurnRecord, branch_of, evaluate_turns, format_report
 from .schema import DatasetError, Dialogue, ToolCall
 from .stats import (
     DEFAULT_MAX_SEQ_LENGTH,
@@ -275,19 +275,52 @@ def _spread(values: list[int]) -> str:
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def evaluate(path: Path) -> None:
-    """Score predicted tool calls against expected ones.
+@click.option("--json", "as_json", is_flag=True, help="Print the full report as JSON instead of text.")
+@click.option(
+    "--show",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Also print the first N turns the model got wrong, with its raw output when the file has it.",
+)
+def evaluate(path: Path, as_json: bool, show: int) -> None:
+    """Score predicted tool calls against expected ones, one assistant turn per line.
 
-    Input: JSONL, each line {"expected": [{"name", "arguments"}], "predicted": [...]}.
+    Input: the JSONL `tcsft-train predict` writes. The minimum is
+    {"expected": [{"name", "arguments"}], "predicted": [...]}; "dialogue_id" adds the
+    per-branch breakdown, "malformed" and per-call "problems" feed the validity rate.
     """
-    comparisons: list[ToolCallComparison] = []
+    turns: list[TurnRecord] = []
+    raw_turns: list[dict[str, Any]] = []
     for line_number, raw in _read_jsonl(path):
-        expected = _parse_calls(raw.get("expected"), path, line_number, "expected")
-        predicted = _parse_calls(raw.get("predicted"), path, line_number, "predicted")
-        comparisons.append(compare_tool_calls(expected, predicted))
-    if not comparisons:
+        where = f"{path}:{line_number}"
+        expected, _ = _parse_calls(raw.get("expected"), where, "expected")
+        predicted, invalid = _parse_calls(raw.get("predicted"), where, "predicted")
+        turns.append(
+            TurnRecord(
+                expected=expected,
+                predicted=predicted,
+                dialogue_id=_opt_str(raw, "dialogue_id", where),
+                turn_index=_opt_int(raw, "turn_index", where),
+                malformed=_malformed_count(raw.get("malformed"), where),
+                invalid=invalid,
+            )
+        )
+        raw_turns.append(raw)
+    if not turns:
         raise click.ClickException(f"{path}: no records found")
-    click.echo(json.dumps(aggregate_comparisons(comparisons).as_dict(), indent=2))
+    report = evaluate_turns(turns)
+    click.echo(json.dumps(report.as_dict(), indent=2) if as_json else format_report(report))
+    wrong = [(turn, raw) for turn, raw in zip(turns, raw_turns, strict=True) if not turn.correct]
+    for turn, raw in wrong[:show]:
+        where = "?" if turn.turn_index is None else str(turn.turn_index)
+        click.echo(f"--- {turn.dialogue_id or '?'}, assistant message {where}")
+        click.echo(f"expected:  {_describe_calls(raw.get('expected'))}")
+        click.echo(f"predicted: {_describe_calls(raw.get('predicted'))}")
+        if raw.get("malformed"):
+            click.echo(f"malformed: {json.dumps(raw['malformed'], ensure_ascii=False)}")
+        if isinstance(raw.get("raw_output"), str):
+            click.echo(f"raw: {raw['raw_output']!r}")
 
 
 class _TokenizerSettings:
@@ -345,7 +378,7 @@ def _load(path: Path) -> tuple[Dialogue, ...]:
 
 def _branch_counts(dialogues: tuple[Dialogue, ...]) -> Counter[str]:
     """Dialogues per branch, the branch being the dialogue_id up to its last dash."""
-    return Counter(dialogue.dialogue_id.rsplit("-", 1)[0] for dialogue in dialogues)
+    return Counter(branch_of(dialogue.dialogue_id) for dialogue in dialogues)
 
 
 def _read_jsonl(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -363,18 +396,64 @@ def _read_jsonl(path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
             yield line_number, raw
 
 
-def _parse_calls(value: object, path: Path, line_number: int, field: str) -> tuple[ToolCall, ...]:
+def _parse_calls(value: object, where: str, field: str) -> tuple[tuple[ToolCall, ...], int]:
+    """The calls under ``field`` and how many of them carry schema ``problems``."""
     if not isinstance(value, list):
-        raise click.ClickException(f"{path}:{line_number}: '{field}' must be a list")
+        raise click.ClickException(f"{where}: '{field}' must be a list")
     calls: list[ToolCall] = []
+    invalid = 0
     for item in value:
         if not isinstance(item, dict):
-            raise click.ClickException(f"{path}:{line_number}: each '{field}' entry must be a JSON object")
+            raise click.ClickException(f"{where}: each '{field}' entry must be a JSON object")
         name = item.get("name")
         arguments = item.get("arguments", {})
+        problems = item.get("problems", [])
         if not isinstance(name, str) or not name:
-            raise click.ClickException(f"{path}:{line_number}: '{field}' entry needs a non-empty 'name'")
+            raise click.ClickException(f"{where}: '{field}' entry needs a non-empty 'name'")
         if not isinstance(arguments, dict):
-            raise click.ClickException(f"{path}:{line_number}: '{field}' entry 'arguments' must be a JSON object")
+            raise click.ClickException(f"{where}: '{field}' entry 'arguments' must be a JSON object")
+        if not isinstance(problems, list):
+            raise click.ClickException(f"{where}: '{field}' entry 'problems' must be a list")
         calls.append(ToolCall(name=name, arguments=arguments))
-    return tuple(calls)
+        invalid += bool(problems)
+    return tuple(calls), invalid
+
+
+def _malformed_count(value: object, where: str) -> int:
+    """``malformed`` is the list of blocks that did not parse; a bare count is accepted too."""
+    if value is None:
+        return 0
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    raise click.ClickException(f"{where}: 'malformed' must be a list of strings or a count")
+
+
+def _opt_str(raw: Mapping[str, Any], key: str, where: str) -> str | None:
+    value = raw.get(key)
+    if value is not None and not isinstance(value, str):
+        raise click.ClickException(f"{where}: '{key}' must be a string")
+    return value
+
+
+def _opt_int(raw: Mapping[str, Any], key: str, where: str) -> int | None:
+    value = raw.get(key)
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+        raise click.ClickException(f"{where}: '{key}' must be an integer")
+    return value
+
+
+def _describe_calls(value: object) -> str:
+    if not isinstance(value, list) or not value:
+        return "(no call)"
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = f"{item.get('name')} {json.dumps(item.get('arguments', {}), ensure_ascii=False)}"
+        problems = item.get("problems")
+        if isinstance(problems, list) and problems:
+            text += f"  [{'; '.join(map(str, problems))}]"
+        parts.append(text)
+    return " | ".join(parts)

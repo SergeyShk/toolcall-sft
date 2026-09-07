@@ -32,9 +32,9 @@ A few conventions that are load-bearing:
   the constraint that made it look like that.
 - **Types are strict.** `pyright` runs in strict mode and the codebase has no `type: ignore`.
 - **The root package stays free of torch, and light to import.** `schema`, `dataset`, `masking`,
-  `metrics`, `config`, `stats`, `scenario`, `generate` and `anonymizer` import without a training
-  install; transformers is imported only where a tokenizer is actually used, and only when it is
-  used, so `tcsft --help` stays instant. Anything needing torch lives in `training/`.
+  `metrics`, `parsing`, `config`, `stats`, `scenario`, `generate` and `anonymizer` import without a
+  training install; transformers is imported only where a tokenizer is actually used, and only when
+  it is used, so `tcsft --help` stays instant. Anything needing torch lives in `training/`.
 
 ## Tests
 

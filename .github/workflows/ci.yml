@@ -28,6 +28,7 @@ jobs:
           uv run --no-sync tcsft split /tmp/all.jsonl --train-out /tmp/train.jsonl --eval-out /tmp/eval.jsonl --eval-fraction 0.2
           uv run --no-sync tcsft stats /tmp/all.jsonl --config configs/mac_mps.yaml
           uv run --no-sync tcsft render /tmp/all.jsonl --config configs/mac_mps.yaml --turn 1
+          uv run --no-sync tcsft evaluate examples/predictions.sample.jsonl --show 3
 
   # Type-checking training/ needs the real torch and peft, so this job takes the full
   # environment — and, having it, also runs the training smoke test on a tiny model.

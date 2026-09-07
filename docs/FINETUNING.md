@@ -92,9 +92,13 @@ inference because only ~3B parameters are active.
 1. **A held-out set** split at the *dialogue* level, deduplicated before splitting. Near-identical
    dialogues leaking across the split is the most common way to fool yourself, and a content-hash
    split only catches exact duplicates — see [DATASET.md](DATASET.md#keeping-the-split-honest).
-2. **Programmatic tool-call metrics** — `tcsft evaluate`: fraction of schema-valid calls, tool-name
-   exact match, argument accuracy, and the rate of calls that should not have happened at all. That
-   last one is what the negative branches exist to measure.
+2. **Programmatic tool-call metrics.** `tcsft-train predict` replays every assistant turn of the
+   held-out set through the model and `tcsft evaluate` scores the result: turn accuracy, false fires
+   (a call where the reference replies with text) and missed calls, per-tool precision and recall,
+   argument accuracy, and the share of calls that would actually run (parsed, schema-valid). The
+   false-fire rate is what the negative branches exist to measure. Teacher-forced and greedy: each
+   turn is generated from the reference history, so the score is per decision and reproducible.
+   Run it on the untuned base too; the delta is the only number that says the tune did anything.
 3. **End-to-end simulation.** vLLM and Ollama both expose an OpenAI-compatible endpoint, so the
    tuned model drops into whatever harness already drives your production model. Running the same
    scenario suites against both is the only apples-to-apples answer.

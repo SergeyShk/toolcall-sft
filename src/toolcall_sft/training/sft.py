@@ -1,7 +1,7 @@
 """LoRA / QLoRA supervised fine-tuning on per-turn, chat-template-exact examples.
 
-Runs on CUDA, MPS and CPU. Device differences live in ``_resolve_device`` and
-``_resolve_dtype``: 4-bit and Liger are CUDA-only, and ``bf16=True`` means CUDA
+Runs on CUDA, MPS and CPU. Device differences live in ``common.resolve_device``
+and ``common.resolve_dtype``: 4-bit and Liger are CUDA-only, and ``bf16=True`` means CUDA
 autocast, so on MPS the base model is loaded in bf16 and the LoRA parameters are
 kept in fp32.
 
@@ -34,8 +34,9 @@ from transformers import (
 
 from ..config import ConfigError, ExperimentConfig, flatten_for_logging
 from ..dataset import load_dialogues
-from ..masking import LABEL_IGNORE_INDEX, MaskedExample, render_example, tokenize_dialogue
-from ..schema import DatasetError, Dialogue
+from ..masking import LABEL_IGNORE_INDEX, MaskedExample, render_example
+from ..schema import Dialogue
+from .common import resolve_device, resolve_dtype, tokenize_dialogues
 
 __all__ = ["run_sft"]
 
@@ -44,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 def run_sft(config: ExperimentConfig, *, config_path: Path | None = None) -> Path:
     """Train a LoRA adapter and return the directory it is saved to."""
-    device = _resolve_device(config.training.device)
-    dtype = _resolve_dtype(config.training.precision, device)
+    device = resolve_device(config.training.device)
+    dtype = resolve_dtype(config.training.precision, device)
     _check_supported(config, device)
     logger.info("training on %s in %s", device, str(dtype).removeprefix("torch."))
 
@@ -137,30 +138,16 @@ def _tokenize(
     *,
     name: str,
 ) -> tuple[MaskedExample, ...]:
-    """Per-turn examples for every dialogue.
-
-    A dialogue over ``max_seq_length`` is an error, not a drop: run ``tcsft filter``
-    so that what trains is what you reviewed.
-    """
-    max_seq_length = config.dataset.max_seq_length
-    examples: list[MaskedExample] = []
-    too_long: list[tuple[str, int]] = []
-    for dialogue in dialogues:
-        turns = tokenize_dialogue(tokenizer, dialogue, chat_template_kwargs=config.dataset.chat_template_kwargs)
-        longest = max(len(example.input_ids) for example in turns)
-        if longest > max_seq_length:
-            too_long.append((dialogue.dialogue_id, longest))
-            continue
-        examples.extend(turns)
-    if too_long:
-        shown = ", ".join(f"{dialogue_id} ({tokens} tokens)" for dialogue_id, tokens in too_long[:5])
-        more = f" and {len(too_long) - 5} more" if len(too_long) > 5 else ""
-        raise DatasetError(
-            f"{name}: {len(too_long)} of {len(dialogues)} dialogues exceed max_seq_length={max_seq_length}: "
-            f"{shown}{more}. Run `tcsft filter --config <this config>` or raise dataset.max_seq_length."
-        )
+    tokenized = tokenize_dialogues(
+        tokenizer,
+        dialogues,
+        max_seq_length=config.dataset.max_seq_length,
+        chat_template_kwargs=config.dataset.chat_template_kwargs,
+        name=name,
+    )
+    examples = tuple(example for _dialogue, turns in tokenized for example in turns)
     logger.info("%s: %d dialogues -> %d examples (one per assistant turn)", name, len(dialogues), len(examples))
-    return tuple(examples)
+    return examples
 
 
 def _to_dataset(examples: tuple[MaskedExample, ...]) -> Dataset:
@@ -173,26 +160,6 @@ def _to_dataset(examples: tuple[MaskedExample, ...]) -> Dataset:
         for example in examples
     ]
     return Dataset.from_list(rows)
-
-
-def _resolve_device(requested: str) -> str:
-    """The requested device, or the best available for ``auto``. A missing device is an error."""
-    cuda = torch.cuda.is_available()
-    mps = torch.backends.mps.is_available()
-    if requested == "auto":
-        return "cuda" if cuda else "mps" if mps else "cpu"
-    if requested == "cuda" and not cuda:
-        raise ConfigError("training.device is 'cuda' but no CUDA device is available; use 'auto' or another device")
-    if requested == "mps" and not mps:
-        raise ConfigError("training.device is 'mps' but the MPS backend is not available; use 'auto' or 'cpu'")
-    return requested
-
-
-def _resolve_dtype(precision: str, device: str) -> torch.dtype:
-    if precision == "auto":
-        # CPU bf16 matmuls fall back to slow kernels.
-        precision = "fp32" if device == "cpu" else "bf16"
-    return {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[precision]
 
 
 def _check_supported(config: ExperimentConfig, device: str) -> None:

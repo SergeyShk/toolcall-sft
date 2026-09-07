@@ -52,6 +52,24 @@ A 1000-dialogue run extrapolates to roughly three hours. A CUDA GPU is an order 
 faster. MPS wall-clock numbers vary by 20% between sessions on the same machine; ratios measured
 back to back are trustworthy, absolute times are not.
 
+## Replaying the eval split
+
+`tcsft-train predict` on the 33-dialogue split (106 assistant turns), greedy, batch 4, bf16 on MPS,
+Qwen3-0.6B:
+
+| Model | Wall clock | Tokens generated |
+|---|---|---|
+| Adapter on top of the base, unmerged | 81 s | 2600 |
+| Merged checkpoint | 67 s | 2590 |
+| Untuned base | 66 s | 2219 |
+
+Same score for the adapter and its merge (96.2% turn accuracy, identical wrong turns), so replaying
+the adapter straight after training is enough; merge for serving. Most of the time is the prompt:
+every turn re-encodes the system prompt and the tool schemas, and the last turn of a dialogue
+carries the whole conversation. Batch size trades memory for speed the same way as in training,
+and 4 is comfortable for 0.6B on this machine. The prompts are the trainer's prompts token for
+token, so a template mismatch shows up here as a number before it shows up in production.
+
 ## Memory on MPS
 
 **Leave `gradient_checkpointing: true`.** PyTorch's MPS allocator may reserve well beyond physical

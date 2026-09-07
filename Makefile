@@ -1,4 +1,4 @@
-.PHONY: sync sync-cuda test lint fmt demo generate validate stats render split train merge
+.PHONY: sync sync-cuda test lint fmt demo generate validate stats render split train merge predict evaluate
 
 sync:
 	uv sync
@@ -18,7 +18,7 @@ fmt:
 	uv run ruff format src tests
 	uv run ruff check --fix src tests
 
-# End-to-end on synthetic data: generate -> validate -> stats -> render -> split -> train.
+# End-to-end on synthetic data: generate -> validate -> stats -> render -> split -> train -> predict.
 demo:
 	uv run tcsft generate --out data/all.jsonl --count 300
 	uv run tcsft validate data/all.jsonl
@@ -26,6 +26,7 @@ demo:
 	uv run tcsft render data/all.jsonl --config configs/mac_mps.yaml --turn 1
 	uv run tcsft split data/all.jsonl --train-out data/train.jsonl --eval-out data/eval.jsonl
 	uv run tcsft-train train --config configs/mac_mps.yaml
+	uv run tcsft-train predict --config configs/mac_mps.yaml
 
 # make generate out=data/all.jsonl count=1000
 generate:
@@ -54,3 +55,11 @@ train:
 # make merge adapter=outputs/<run>/adapter output=outputs/<run>/merged
 merge:
 	uv run tcsft-train merge --adapter $(adapter) --output $(output)
+
+# make predict config=configs/mac_mps.yaml
+predict:
+	uv run tcsft-train predict --config $(config)
+
+# make evaluate path=outputs/<run>/predictions.jsonl
+evaluate:
+	uv run tcsft evaluate $(path) --show 10
