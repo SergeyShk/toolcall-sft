@@ -50,6 +50,7 @@ def _tiny_model_and_tokenizer(directory: Path) -> None:
         head_dim=8,
         max_position_embeddings=1024,
     )
+    torch.manual_seed(0)  # the untrained weights decide what the replay generates
     Qwen3ForCausalLM(config).save_pretrained(str(directory))
 
 
@@ -139,8 +140,10 @@ training:
 
         assert run.dialogues == 2
         assert len(run.turns) == 4
-        assert 0 < run.generated_tokens <= 4 * 8
         records = [json.loads(line) for line in predictions_path.read_text(encoding="utf-8").splitlines()]
+        # One token per character here; a model may legitimately stop on its first token.
+        assert run.generated_tokens == sum(len(record["raw_output"]) for record in records)
+        assert run.generated_tokens <= 4 * 8
         assert [(record["dialogue_id"], record["turn_index"]) for record in records] == [
             ("smoke-4", 2),
             ("smoke-4", 4),
