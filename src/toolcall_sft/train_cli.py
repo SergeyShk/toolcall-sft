@@ -139,7 +139,10 @@ def predict(
     if model is None:
         if experiment is None:
             raise click.ClickException("--model is required without --config")
-        model = str(experiment.output_dir / "adapter")
+        adapter = experiment.output_dir / "adapter"
+        if not adapter.is_dir():
+            raise click.ClickException(f"{adapter}: nothing to replay; run `tcsft-train train --config {config_path}`")
+        model = str(adapter)
         out_path = out_path or experiment.output_dir / "predictions.jsonl"
     elif out_path is None:
         raise click.ClickException("--out is required when --model is given, so a baseline cannot overwrite a run")

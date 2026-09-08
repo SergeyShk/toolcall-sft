@@ -82,13 +82,13 @@ def check_tool_call(call: ToolCall, tools: Sequence[Mapping[str, Any]]) -> tuple
     schema = _parameters_for(call.name, tools)
     if schema is None:
         return (f"unknown tool {call.name!r}",)
-    properties = schema.get("properties")
-    if not isinstance(properties, Mapping):
-        return ()
     problems: list[str] = []
     required = schema.get("required", [])
     if isinstance(required, list):
         problems.extend(f"missing required argument {name!r}" for name in required if name not in call.arguments)
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return tuple(problems)
     for name, value in call.arguments.items():
         declared = properties.get(name)
         if not isinstance(declared, Mapping):
@@ -146,9 +146,14 @@ def _check_value(name: str, value: object, declared: Mapping[str, Any]) -> list[
     if known and not any(_is_type(value, item) for item in known):
         problems.append(f"argument {name!r} should be {' or '.join(known)}, got {type(value).__name__}")
     choices = declared.get("enum")
-    if isinstance(choices, list) and value not in choices:
+    if isinstance(choices, list) and not _in_enum(value, choices):
         problems.append(f"argument {name!r} must be one of {', '.join(map(str, choices))}, got {value!r}")
     return problems
+
+
+def _in_enum(value: object, choices: list[Any]) -> bool:
+    # bool is an int in Python, so True must not match a 1 among the choices.
+    return any(isinstance(value, bool) == isinstance(choice, bool) and value == choice for choice in choices)
 
 
 def _is_type(value: object, json_type: str) -> bool:

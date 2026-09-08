@@ -1,5 +1,5 @@
 """End-to-end smoke test of run_sft, merge_adapter and run_predictions on a tiny random Qwen3
-built in the test.
+built in the test, plus the predict failure paths that need torch to reach.
 
 CPU, offline, a few seconds. Skipped when torch is not installed.
 """
@@ -19,7 +19,14 @@ from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM 
 
 from toolcall_sft import Dialogue, Message, Role, ToolCall, load_experiment_config, write_dialogues  # noqa: E402
 from toolcall_sft.cli import main as tcsft  # noqa: E402
-from toolcall_sft.training import PredictionSettings, merge_adapter, run_predictions, run_sft  # noqa: E402
+from toolcall_sft.train_cli import main as tcsft_train  # noqa: E402
+from toolcall_sft.training import (  # noqa: E402
+    PredictionError,
+    PredictionSettings,
+    merge_adapter,
+    run_predictions,
+    run_sft,
+)
 
 QWEN3_TEMPLATE = (Path(__file__).parent / "templates" / "qwen3.jinja").read_text(encoding="utf-8")
 
@@ -74,6 +81,44 @@ def _dialogues() -> tuple[Dialogue, ...]:
             )
         )
     return tuple(dialogues)
+
+
+def test_predict_without_a_trained_adapter_names_the_missing_directory(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        f"""
+run_name: smoke
+base_model: {tmp_path / "base"}
+output_dir: {tmp_path / "out"}
+dataset:
+  train_path: {tmp_path / "train.jsonl"}
+  max_seq_length: 512
+lora:
+  r: 4
+  alpha: 8
+training:
+  epochs: 1
+  learning_rate: 1.0e-3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 1
+""",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(tcsft_train, ["predict", "--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "nothing to replay" in result.output
+    assert "tcsft-train train" in result.output
+
+
+def test_predict_reports_a_model_it_cannot_load(tmp_path: Path) -> None:
+    settings = PredictionSettings(
+        model=str(tmp_path / "missing"), max_seq_length=512, chat_template_kwargs={}, device="cpu"
+    )
+
+    with pytest.raises(PredictionError, match="no tokenizer to load"):
+        run_predictions(settings, (), out_path=tmp_path / "predictions.jsonl")
 
 
 def test_run_sft_trains_saves_and_records_the_run(tmp_path: Path) -> None:

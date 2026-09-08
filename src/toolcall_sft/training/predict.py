@@ -96,7 +96,7 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
     dtype = resolve_dtype(settings.precision, device)
     logger.info("predicting on %s in %s", device, str(dtype).removeprefix("torch."))
 
-    tokenizer = AutoTokenizer.from_pretrained(settings.model)
+    tokenizer = _load_tokenizer(settings.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     pad_token_id = _token_id(tokenizer.pad_token_id)
@@ -173,7 +173,7 @@ def run_predictions(settings: PredictionSettings, dialogues: Sequence[Dialogue],
                     truncated=generated.truncated,
                 )
             )
-    generated_tokens = sum(len(tokenizer(item.text, add_special_tokens=False)["input_ids"]) for item in outputs)
+    generated_tokens = sum(len(tokenizer.encode(item.text, add_special_tokens=False)) for item in outputs)
     run = PredictionRun(
         turns=tuple(turns), dialogues=len(tokenized), generated_tokens=generated_tokens, seconds=seconds
     )
@@ -199,13 +199,23 @@ def _check_tool_call_format(tokenizer: PreTrainedTokenizerBase) -> None:
         )
 
 
-def _load_model(path: str, *, dtype: torch.dtype, device: str) -> _Generative:
-    if (Path(path) / "adapter_config.json").is_file():
-        from peft import AutoPeftModelForCausalLM
+def _load_tokenizer(model: str) -> PreTrainedTokenizerBase:
+    try:
+        return AutoTokenizer.from_pretrained(model)
+    except (OSError, ValueError) as error:
+        raise PredictionError(f"{model}: no tokenizer to load ({error})") from error
 
-        loaded: object = AutoPeftModelForCausalLM.from_pretrained(path, dtype=dtype)
-    else:
-        loaded = AutoModelForCausalLM.from_pretrained(path, dtype=dtype)
+
+def _load_model(path: str, *, dtype: torch.dtype, device: str) -> _Generative:
+    try:
+        if (Path(path) / "adapter_config.json").is_file():
+            from peft import AutoPeftModelForCausalLM
+
+            loaded: object = AutoPeftModelForCausalLM.from_pretrained(path, dtype=dtype)
+        else:
+            loaded = AutoModelForCausalLM.from_pretrained(path, dtype=dtype)
+    except (OSError, ValueError) as error:
+        raise PredictionError(f"{path}: no model to load ({error})") from error
     model = cast("_Generative", loaded).to(device)
     model.eval()
     return model

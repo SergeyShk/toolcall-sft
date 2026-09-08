@@ -133,6 +133,25 @@ def test_check_tool_calls_reports_nothing_when_the_dialogue_declares_no_tools() 
     assert check_tool_calls(calls, TOOLS) == ((), ("unknown tool 'send_money'",))
 
 
+def test_check_required_argument_without_declared_properties() -> None:
+    tools = ({"type": "function", "function": {"name": "t", "parameters": {"type": "object", "required": ["x"]}}},)
+
+    assert check_tool_call(_call("t"), tools) == ("missing required argument 'x'",)
+    assert check_tool_call(_call("t", x=1), tools) == ()
+
+
+def test_check_enum_does_not_take_a_bool_for_a_number() -> None:
+    tools = (
+        {
+            "type": "function",
+            "function": {"name": "t", "parameters": {"type": "object", "properties": {"x": {"enum": [1, 2]}}}},
+        },
+    )
+
+    assert check_tool_call(_call("t", x=2), tools) == ()
+    assert check_tool_call(_call("t", x=True), tools) == ("argument 'x' must be one of 1, 2, got True",)
+
+
 def test_check_tool_without_declared_properties_accepts_anything() -> None:
     tools = ({"type": "function", "function": {"name": "ping"}},)
 
