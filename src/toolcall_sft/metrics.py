@@ -53,7 +53,7 @@ class TurnRecord:
     @property
     def correct(self) -> bool:
         """Exactly the reference calls, and nothing that failed to parse. Content is not compared."""
-        return self.malformed == 0 and compare_tool_calls(self.expected, self.predicted).correct
+        return _correct(self, compare_tool_calls(self.expected, self.predicted))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -268,7 +268,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
         for name in sorted({call.name for call in (*turn.expected, *turn.predicted)}):
             restricted = compare_tool_calls(_named(turn.expected, name), _named(turn.predicted, name))
             per_tool.setdefault(name, _CallSums()).add(restricted)
-        correct = turn.correct
+        correct = _correct(turn, comparison)
         acted = bool(turn.predicted) or turn.malformed > 0
         false_fire = not turn.expected and acted
         missed = bool(turn.expected) and not acted
@@ -401,6 +401,11 @@ class _GroupSums:
         self.correct_turns = 0
         self.false_fires = 0
         self.missed_calls = 0
+
+
+def _correct(turn: TurnRecord, comparison: ToolCallComparison) -> bool:
+    """``turn.correct`` given a pairing already computed for it."""
+    return turn.malformed == 0 and comparison.correct
 
 
 def _named(calls: Iterable[ToolCall], name: str) -> tuple[ToolCall, ...]:

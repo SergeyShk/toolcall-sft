@@ -1,17 +1,27 @@
 """What training and prediction share: device and dtype resolution, per-turn tokenization
-under the dataset's token budget."""
+under the dataset's token budget, and the provenance both write next to their output."""
 
+import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import peft
 import torch
+import transformers
 from transformers import PreTrainedTokenizerBase
 
 from ..config import ConfigError
 from ..masking import MaskedExample, tokenize_dialogue
 from ..schema import DatasetError, Dialogue
 
-__all__ = ["resolve_device", "resolve_dtype", "tokenize_dialogues"]
+__all__ = [
+    "ensure_pad_token",
+    "git_state",
+    "resolve_device",
+    "resolve_dtype",
+    "tokenize_dialogues",
+    "versions",
+]
 
 
 def resolve_device(requested: str) -> str:
@@ -25,6 +35,26 @@ def resolve_device(requested: str) -> str:
     if requested == "mps" and not mps:
         raise ConfigError("training.device is 'mps' but the MPS backend is not available; use 'auto' or 'cpu'")
     return requested
+
+
+def ensure_pad_token(tokenizer: PreTrainedTokenizerBase) -> None:
+    """Pad with the end-of-turn token when the tokenizer has no pad token of its own."""
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+
+def versions() -> dict[str, str]:
+    return {"torch": torch.__version__, "transformers": transformers.__version__, "peft": peft.__version__}
+
+
+def git_state() -> dict[str, Any]:
+    """The commit the run was produced at, and whether the tree was dirty."""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "dirty": None}
+    return {"commit": commit.strip(), "dirty": bool(status.strip())}
 
 
 def resolve_dtype(precision: str, device: str) -> torch.dtype:

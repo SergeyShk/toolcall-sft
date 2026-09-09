@@ -8,9 +8,12 @@ from typing import Any
 import yaml
 
 __all__ = [
+    "DEFAULT_BATCH_SIZE",
     "DEFAULT_CHAT_TEMPLATE_KWARGS",
+    "DEFAULT_MAX_NEW_TOKENS",
     "ConfigError",
     "DatasetSettings",
+    "EvaluationSettings",
     "ExperimentConfig",
     "LR_SCHEDULERS",
     "LoraSettings",
@@ -39,8 +42,13 @@ LR_SCHEDULERS = (
 # Passed to the chat template for both prompt and target. Pins Qwen3 to non-thinking
 # mode, the mode the tune is served in; templates that do not read it ignore it.
 DEFAULT_CHAT_TEMPLATE_KWARGS: Mapping[str, bool | int | float | str] = {"enable_thinking": False}
+# Replay decoding. 256 tokens covers a tool call and a short reply; batch 4 fits a 0.6B on a laptop.
+DEFAULT_MAX_NEW_TOKENS = 256
+DEFAULT_BATCH_SIZE = 4
 
-_TOP_LEVEL_KEYS = frozenset({"run_name", "base_model", "output_dir", "dataset", "lora", "training", "tracking"})
+_TOP_LEVEL_KEYS = frozenset(
+    {"run_name", "base_model", "output_dir", "dataset", "lora", "training", "evaluation", "tracking"}
+)
 _DATASET_KEYS = frozenset({"train_path", "eval_path", "max_seq_length", "chat_template_kwargs"})
 _LORA_KEYS = frozenset({"r", "alpha", "dropout", "target_modules"})
 _TRAINING_KEYS = frozenset(
@@ -61,6 +69,7 @@ _TRAINING_KEYS = frozenset(
         "seed",
     }
 )
+_EVALUATION_KEYS = frozenset({"max_new_tokens", "batch_size"})
 _TRACKING_KEYS = frozenset({"report_to", "mlflow_experiment"})
 
 
@@ -103,6 +112,14 @@ class TrainingSettings:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class EvaluationSettings:
+    """Decoding for ``tcsft-train predict``; its flags override these."""
+
+    max_new_tokens: int
+    batch_size: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TrackingSettings:
     report_to: tuple[str, ...]
     mlflow_experiment: str | None
@@ -116,6 +133,7 @@ class ExperimentConfig:
     dataset: DatasetSettings
     lora: LoraSettings
     training: TrainingSettings
+    evaluation: EvaluationSettings
     tracking: TrackingSettings
 
 
@@ -156,6 +174,8 @@ def flatten_for_logging(config: ExperimentConfig) -> dict[str, str]:
         "training.load_in_4bit": str(config.training.load_in_4bit),
         "training.use_liger_kernel": str(config.training.use_liger_kernel),
         "training.seed": str(config.training.seed),
+        "evaluation.max_new_tokens": str(config.evaluation.max_new_tokens),
+        "evaluation.batch_size": str(config.evaluation.batch_size),
     }
 
 
@@ -168,6 +188,7 @@ def _experiment_from_mapping(raw: Mapping[str, Any]) -> ExperimentConfig:
         dataset=_dataset_settings(_section(raw, "dataset")),
         lora=_lora_settings(_section(raw, "lora")),
         training=_training_settings(_section(raw, "training")),
+        evaluation=_evaluation_settings(raw.get("evaluation", {})),
         tracking=_tracking_settings(raw.get("tracking", {})),
     )
 
@@ -227,6 +248,16 @@ def _training_settings(section: Mapping[str, Any]) -> TrainingSettings:
         load_in_4bit=_bool(section, "load_in_4bit", "training", default=False),
         use_liger_kernel=_bool(section, "use_liger_kernel", "training", default=False),
         seed=_int(section, "seed", "training", default=42, minimum=0),
+    )
+
+
+def _evaluation_settings(section: Any) -> EvaluationSettings:
+    if not isinstance(section, Mapping):
+        raise ConfigError("'evaluation' section must be a mapping")
+    _reject_unknown(section, _EVALUATION_KEYS, "evaluation")
+    return EvaluationSettings(
+        max_new_tokens=_int(section, "max_new_tokens", "evaluation", default=DEFAULT_MAX_NEW_TOKENS, minimum=1),
+        batch_size=_int(section, "batch_size", "evaluation", default=DEFAULT_BATCH_SIZE, minimum=1),
     )
 
 

@@ -18,6 +18,7 @@ from .dataset import dataset_stats, dedup_dialogues, load_dialogues, split_dialo
 from .generate import GenerationError, branch_names, generate_dialogues
 from .masking import TemplateCompatibilityError, render_example, tokenize_dialogue
 from .metrics import TurnRecord, branch_of, evaluate_turns, format_report
+from .parsing import check_tool_calls
 from .schema import DatasetError, Dialogue, ToolCall
 from .stats import (
     DEFAULT_MAX_SEQ_LENGTH,
@@ -275,6 +276,13 @@ def _spread(values: list[int]) -> str:
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--data",
+    "data_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Dialogues the predictions came from; rechecks every predicted call against their tool schemas.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Print the full report as JSON instead of text.")
 @click.option(
     "--show",
@@ -283,20 +291,26 @@ def _spread(values: list[int]) -> str:
     show_default=True,
     help="Also print the first N turns the model got wrong, with its raw output when the file has it.",
 )
-def evaluate(path: Path, as_json: bool, show: int) -> None:
+def evaluate(path: Path, data_path: Path | None, as_json: bool, show: int) -> None:
     """Score predicted tool calls against expected ones, one assistant turn per line.
 
     Input: the JSONL `tcsft-train predict` writes. The minimum is
     {"expected": [{"name", "arguments"}], "predicted": [...]}; "dialogue_id" adds the
     per-branch breakdown, "malformed" and per-call "problems" feed the validity rate,
     "truncated" marks a turn cut off at the token budget.
+
+    A file from another harness need not carry "problems": `--data` rechecks the calls
+    against the tool schemas of the dialogues themselves.
     """
+    tools = _tools_by_dialogue(data_path) if data_path is not None else None
     turns: list[TurnRecord] = []
     raw_turns: list[dict[str, Any]] = []
     for line_number, raw in _read_jsonl(path):
         where = f"{path}:{line_number}"
         expected, _ = _parse_calls(raw.get("expected"), where, "expected")
         predicted, invalid = _parse_calls(raw.get("predicted"), where, "predicted")
+        if tools is not None:
+            invalid = _recheck(raw, predicted, tools, where)
         turns.append(
             TurnRecord(
                 expected=expected,
@@ -370,6 +384,24 @@ class _TokenizerSettings:
                 "'test' dependency group (uv sync --group test)"
             ) from error
         return AutoTokenizer.from_pretrained(self.base_model)
+
+
+def _tools_by_dialogue(path: Path) -> dict[str, tuple[dict[str, Any], ...]]:
+    return {dialogue.dialogue_id: dialogue.tools for dialogue in _load(path)}
+
+
+def _recheck(
+    raw: dict[str, Any], predicted: tuple[ToolCall, ...], tools: Mapping[str, tuple[dict[str, Any], ...]], where: str
+) -> int:
+    """Schema problems taken from the dialogues rather than from the file, written back so
+    ``--show`` prints them. Returns how many calls carry one."""
+    dialogue_id = raw.get("dialogue_id")
+    if not isinstance(dialogue_id, str) or dialogue_id not in tools:
+        raise click.ClickException(f"{where}: dialogue_id {dialogue_id!r} is not in the --data file")
+    found = check_tool_calls(predicted, tools[dialogue_id])
+    for entry, problems in zip(raw["predicted"], found, strict=True):
+        entry["problems"] = list(problems)
+    return sum(1 for problems in found if problems)
 
 
 def _load(path: Path) -> tuple[Dialogue, ...]:

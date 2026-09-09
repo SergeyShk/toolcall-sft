@@ -92,7 +92,7 @@ magnitude faster. Details and memory levers: [docs/HARDWARE.md](docs/HARDWARE.md
 | `tcsft split` | Dedup + deterministic content-hash split, with a per-branch breakdown of the eval side. |
 | `tcsft-train train` | LoRA/QLoRA with `transformers.Trainer`. Writes `config.yaml`, `run.json` and `example.txt` next to the checkpoints. |
 | `tcsft-train predict` | Replays every assistant turn of a dialogue set through a model (adapter, merged checkpoint or untuned base), greedy, from the reference history. Writes `predictions.jsonl` and prints the score. |
-| `tcsft evaluate` | Scores a predictions file: turn accuracy, false fires and missed calls, per-tool precision and recall, argument accuracy, calls that would run. `--show` prints the wrong turns with the raw output. |
+| `tcsft evaluate` | Scores a predictions file: turn accuracy, false fires and missed calls, per-tool precision and recall, argument accuracy, calls that would run. `--show` prints the wrong turns with the raw output, `--data` rechecks the calls against the dialogues. |
 | `tcsft-train merge` | Folds the adapter into the base weights (fp32 merge, bf16 once) for standalone serving. |
 
 `tcsft` needs no torch; transformers is imported only by the commands that render a chat template.
@@ -211,6 +211,7 @@ not yet run end to end by the author). Unknown keys are errors, not no-ops.
 | `training.precision` | `auto` | bf16 on an accelerator, fp32 on CPU. LoRA parameters stay fp32 on MPS. |
 | `training.eval_batch_size` | = train batch | Eval logits span the whole vocabulary; see [docs/HARDWARE.md](docs/HARDWARE.md). |
 | `training.load_in_4bit` / `use_liger_kernel` | `false` | CUDA only; refused up front elsewhere. |
+| `evaluation.max_new_tokens` / `batch_size` | 256 / 4 | Replay decoding for `tcsft-train predict`; its flags override them. |
 | `tracking.report_to` | `[]` | Add `["mlflow"]` and `mlflow_experiment` to log params, config and metrics. |
 
 [config.py](src/toolcall_sft/config.py) is the authority. Every run leaves `config.yaml`,
@@ -261,11 +262,14 @@ low-entropy, so a tune should sit near the ceiling on it; the table that matters
 real dialogues.
 
 `predictions.jsonl` has one record per turn: expected and predicted calls, the schema problems of
-each predicted call, whether generation was cut off, the raw output, and the content on both sides; a `.meta.json` next to it
-records the model, decoding, versions and git state. `tcsft evaluate --show 10` prints the wrong
-turns with the raw output, `--json` the full report. The format is plain enough to write from any
-other harness and score the same way; the minimum is `{"expected": [...], "predicted": [...]}` per
-line.
+each predicted call, whether generation was cut off, the raw output, and the content on both sides;
+a `.meta.json` next to it records the model and its base, the data replayed, decoding, versions and
+git state. Records are written as each batch finishes, so a replay that dies leaves what it scored;
+that puts the file in generation order rather than dialogue order. `tcsft evaluate --show 10` prints
+the wrong turns with the raw output, `--json` the full report. The format is plain enough to write
+from any other harness and score the same way — the minimum is
+`{"expected": [...], "predicted": [...]}` per line — and `--data eval.jsonl` rechecks such a file's
+calls against the tool schemas of the dialogues themselves.
 
 ## Serving
 

@@ -181,26 +181,29 @@ training:
         )
         predictions_path = tmp_path / f"{name}.predictions.jsonl"
 
-        run = run_predictions(settings, dialogues[4:], out_path=predictions_path)
+        run = run_predictions(
+            settings, dialogues[4:], out_path=predictions_path, data_path=tmp_path / "eval.jsonl", limit=2
+        )
 
         assert run.dialogues == 2
         assert len(run.turns) == 4
         records = [json.loads(line) for line in predictions_path.read_text(encoding="utf-8").splitlines()]
-        # One token per character here; a model may legitimately stop on its first token.
-        assert run.generated_tokens == sum(len(record["raw_output"]) for record in records)
+        # One token per character here, plus the stop token when the model finished on its own.
+        characters = sum(len(record["raw_output"]) for record in records)
+        assert run.generated_tokens == characters + sum(not record["truncated"] for record in records)
         assert run.generated_tokens <= 4 * 8
-        assert [(record["dialogue_id"], record["turn_index"]) for record in records] == [
-            ("smoke-4", 2),
-            ("smoke-4", 4),
-            ("smoke-5", 2),
-            ("smoke-5", 4),
-        ]
-        assert records[0]["expected"] == [{"name": "get_payees", "arguments": {"name": "Noah"}}]
-        assert records[1]["expected"] == [] and records[1]["expected_content"] == "Noah - send $50?"
+        # Records land as their batch finishes, longest prompt first, not in dialogue order.
+        by_turn = {(record["dialogue_id"], record["turn_index"]): record for record in records}
+        assert sorted(by_turn) == [("smoke-4", 2), ("smoke-4", 4), ("smoke-5", 2), ("smoke-5", 4)]
+        assert by_turn["smoke-4", 2]["expected"] == [{"name": "get_payees", "arguments": {"name": "Noah"}}]
+        assert by_turn["smoke-4", 4]["expected"] == []
+        assert by_turn["smoke-4", 4]["expected_content"] == "Noah - send $50?"
         assert all(isinstance(record["raw_output"], str) for record in records)
         assert all(record.keys() >= {"predicted", "predicted_content", "malformed", "truncated"} for record in records)
         meta = json.loads(predictions_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
         assert meta["model"] == str(model_dir)
+        assert meta["base_model"] == (str(tmp_path / "base") if name == "adapter" else None)
+        assert meta["data"] == {"path": str(tmp_path / "eval.jsonl"), "limit": 2, "dialogues": 2, "turns": 4}
         assert meta["decoding"] == {"greedy": True, "max_new_tokens": 8, "batch_size": 3}
         assert meta["resolved"] == {"device": "cpu", "dtype": "float32"}
 

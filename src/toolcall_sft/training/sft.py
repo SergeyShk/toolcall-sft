@@ -12,13 +12,10 @@ before training starts.
 import json
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
-import peft
 import torch
-import transformers
 from datasets import Dataset
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
@@ -36,7 +33,7 @@ from ..config import ConfigError, ExperimentConfig, flatten_for_logging
 from ..dataset import load_dialogues
 from ..masking import LABEL_IGNORE_INDEX, MaskedExample, render_example
 from ..schema import Dialogue
-from .common import resolve_device, resolve_dtype, tokenize_dialogues
+from .common import ensure_pad_token, git_state, resolve_device, resolve_dtype, tokenize_dialogues, versions
 
 __all__ = ["run_sft"]
 
@@ -51,8 +48,7 @@ def run_sft(config: ExperimentConfig, *, config_path: Path | None = None) -> Pat
     logger.info("training on %s in %s", device, str(dtype).removeprefix("torch."))
 
     tokenizer = AutoTokenizer.from_pretrained(config.base_model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    ensure_pad_token(tokenizer)
 
     train_dialogues = load_dialogues(config.dataset.train_path)
     train_examples = _tokenize(tokenizer, train_dialogues, config, name="train")
@@ -225,21 +221,8 @@ def _write_run_record(
         "config": flatten_for_logging(config),
         "resolved": {"device": device, "dtype": str(dtype).removeprefix("torch.")},
         "dataset": counts,
-        "versions": {
-            "torch": torch.__version__,
-            "transformers": transformers.__version__,
-            "peft": peft.__version__,
-        },
-        "git": _git_state(),
+        "versions": versions(),
+        "git": git_state(),
     }
     (config.output_dir / "run.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     (config.output_dir / "example.txt").write_text(example_text, encoding="utf-8")
-
-
-def _git_state() -> dict[str, Any]:
-    try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout
-        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return {"commit": None, "dirty": None}
-    return {"commit": commit.strip(), "dirty": bool(status.strip())}

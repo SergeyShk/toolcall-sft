@@ -109,3 +109,72 @@ def test_evaluate_rejects_an_empty_file(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "no records found" in result.output
+
+
+def _dialogue(dialogue_id: str) -> dict[str, object]:
+    return {
+        "dialogue_id": dialogue_id,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_payment",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"payee_id": {"type": "string"}, "amount": {"type": "number"}},
+                        "required": ["payee_id", "amount"],
+                    },
+                },
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "pay p1 40"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"name": "create_payment", "arguments": {"payee_id": "p1", "amount": 40.0}}],
+            },
+        ],
+    }
+
+
+def test_evaluate_rechecks_the_calls_against_the_dialogues(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.jsonl"
+    # No "problems" in the file: another harness wrote it.
+    _write(
+        predictions,
+        [
+            {
+                "dialogue_id": "happy_path-1",
+                "turn_index": 1,
+                "expected": [{"name": "create_payment", "arguments": {"payee_id": "p1", "amount": 40.0}}],
+                "predicted": [
+                    {"name": "create_payment", "arguments": {"payee_id": "p1", "amount": 40.0, "currency": "USD"}}
+                ],
+            }
+        ],
+    )
+    data = tmp_path / "eval.jsonl"
+    _write(data, [_dialogue("happy_path-1")])
+
+    alone = CliRunner().invoke(main, ["evaluate", str(predictions), "--json"])
+    assert json.loads(alone.output)["calls"]["invalid"] == 0
+
+    checked = CliRunner().invoke(main, ["evaluate", str(predictions), "--data", str(data), "--json"])
+    assert checked.exit_code == 0, checked.output
+    assert json.loads(checked.output)["calls"]["invalid"] == 1
+
+    shown = CliRunner().invoke(main, ["evaluate", str(predictions), "--data", str(data), "--show", "1"])
+    assert "undeclared argument 'currency'" in shown.output
+
+
+def test_evaluate_rejects_data_that_does_not_cover_a_record(tmp_path: Path) -> None:
+    predictions = tmp_path / "predictions.jsonl"
+    _write(predictions, [{"dialogue_id": "elsewhere-1", "expected": [], "predicted": []}])
+    data = tmp_path / "eval.jsonl"
+    _write(data, [_dialogue("happy_path-1")])
+
+    result = CliRunner().invoke(main, ["evaluate", str(predictions), "--data", str(data)])
+
+    assert result.exit_code != 0
+    assert "is not in the --data file" in result.output

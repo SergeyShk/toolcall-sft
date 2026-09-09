@@ -13,7 +13,9 @@ from pathlib import Path
 import click
 
 from .config import (
+    DEFAULT_BATCH_SIZE,
     DEFAULT_CHAT_TEMPLATE_KWARGS,
+    DEFAULT_MAX_NEW_TOKENS,
     DEVICES,
     PRECISIONS,
     ConfigError,
@@ -108,8 +110,18 @@ def merge(adapter: Path, output: Path) -> None:
     default=None,
     help="Predictions JSONL. Defaults to <output_dir>/predictions.jsonl when the model comes from --config.",
 )
-@click.option("--max-new-tokens", type=click.IntRange(min=1), default=256, show_default=True)
-@click.option("--batch-size", type=click.IntRange(min=1), default=4, show_default=True)
+@click.option(
+    "--max-new-tokens",
+    type=click.IntRange(min=1),
+    default=None,
+    help=f"Overrides evaluation.max_new_tokens from --config; defaults to {DEFAULT_MAX_NEW_TOKENS}.",
+)
+@click.option(
+    "--batch-size",
+    type=click.IntRange(min=1),
+    default=None,
+    help=f"Overrides evaluation.batch_size from --config; defaults to {DEFAULT_BATCH_SIZE}.",
+)
 @click.option("--limit", type=click.IntRange(min=1), default=None, help="Replay only the first N dialogues.")
 @click.option("--device", type=click.Choice(DEVICES), default=None, help="Overrides --config; default auto.")
 @click.option("--precision", type=click.Choice(PRECISIONS), default=None, help="Overrides --config; default auto.")
@@ -118,8 +130,8 @@ def predict(
     model: str | None,
     data_path: Path | None,
     out_path: Path | None,
-    max_new_tokens: int,
-    batch_size: int,
+    max_new_tokens: int | None,
+    batch_size: int | None,
     limit: int | None,
     device: str | None,
     precision: str | None,
@@ -154,8 +166,9 @@ def predict(
         model=model,
         max_seq_length=experiment.dataset.max_seq_length if experiment else DEFAULT_MAX_SEQ_LENGTH,
         chat_template_kwargs=experiment.dataset.chat_template_kwargs if experiment else DEFAULT_CHAT_TEMPLATE_KWARGS,
-        max_new_tokens=max_new_tokens,
-        batch_size=batch_size,
+        max_new_tokens=max_new_tokens
+        or (experiment.evaluation.max_new_tokens if experiment else DEFAULT_MAX_NEW_TOKENS),
+        batch_size=batch_size or (experiment.evaluation.batch_size if experiment else DEFAULT_BATCH_SIZE),
         device=device or (experiment.training.device if experiment else "auto"),
         precision=precision or (experiment.training.precision if experiment else "auto"),
     )
@@ -163,7 +176,7 @@ def predict(
         dialogues = load_dialogues(data_path)
         if limit is not None:
             dialogues = dialogues[:limit]
-        run = run_predictions(settings, dialogues, out_path=out_path)
+        run = run_predictions(settings, dialogues, out_path=out_path, data_path=data_path, limit=limit)
     except (ConfigError, DatasetError, TemplateCompatibilityError, PredictionError) as error:
         raise click.ClickException(str(error)) from error
     click.echo(
