@@ -9,30 +9,16 @@ The default is **Qwen3-0.6B**, smaller than you would ship. The first things you
 pipeline, the loss masking and the metrics, and all three misbehave identically at 0.6B and at 8B;
 the small one just tells you sooner.
 
-Measured on an M3 Pro, same 300-dialogue corpus, one epoch, 34 optimizer steps. These numbers were
-taken with the earlier whole-dialogue rendering; per-turn examples multiply the tokens per epoch for
-both models alike, so read the ratio, not the wall clock:
-
-| | Qwen3-0.6B | Qwen3-1.7B |
-|---|---|---|
-| Trainable parameters | 10.1M (1.66%) | 17.4M (1.00%) |
-| Seconds per step | 18.4 | 34.1 |
-| Wall clock | 11m02s | 19m31s |
-| Held-out loss | 0.105 | 0.136 |
-
-Two things to read carefully. The speed-up is 1.85x, not the 2.8x the parameter counts suggest:
-model loading, the optimizer, evaluation and MPS launch overhead do not shrink with the model. And
-the smaller model came out ahead on loss, which is not evidence that it is better: at 34 steps both
-are undertrained, the adapter is a larger fraction of the smaller model, and the held-out set is 31
-dialogues, so a gap of 0.03 means nothing.
-
 **This dataset cannot rank models.** It is template-generated and low-entropy, so once a model has
-the sentence shapes there is nothing left to learn and loss saturates for everyone. It is a good
-benchmark for the pipeline and a useless one for choosing what to ship; for that you need real
-dialogues and tool-call metrics.
+the sentence shapes there is nothing left to learn and loss saturates for everyone — two thirds of
+its held-out tool calls appear verbatim in the training set, measured in
+[DATASET.md](DATASET.md#keeping-the-split-honest). It is a good benchmark for the pipeline and a
+useless one for choosing what to ship; for that you need real dialogues and tool-call metrics.
 
 Iterate at 0.6B, step up to 1.7B or 4B once the harness is trustworthy and the question has changed
-from "does this train" to "are the arguments right".
+from "does this train" to "are the arguments right". A larger model costs less extra wall clock than
+its parameter count suggests: model loading, the optimizer, evaluation and MPS launch overhead do
+not shrink with the model.
 
 ## What the default run costs
 
@@ -43,10 +29,10 @@ accumulation, gradient checkpointing on, 10.1M trainable parameters (1.66% of th
 |---|---|
 | 300 dialogues → per-turn examples | 975 (267 train / 33 eval dialogues) |
 | Optimizer steps, 2 epochs | 218 |
-| Seconds per step | ~15.7 |
-| Training wall clock | 57m11s |
-| Held-out loss after epoch 1 / 2 | 0.092 / 0.064 |
-| Evaluation time, epoch 1 / 2 | 47 s / 49 s |
+| Seconds per step | ~15.8 |
+| Training wall clock | 58m48s |
+| Held-out loss after epoch 1 / 2 | 0.097 / 0.064 |
+| Evaluation time, epoch 1 / 2 | 48 s / 46 s |
 
 A 1000-dialogue run extrapolates to roughly three hours. A CUDA GPU is an order of magnitude
 faster. MPS wall-clock numbers vary by 20% between sessions on the same machine; ratios measured
@@ -59,9 +45,9 @@ Qwen3-0.6B:
 
 | Model | Wall clock | Tokens generated |
 |---|---|---|
-| Adapter on top of the base, unmerged | 81 s | 2600 |
-| Merged checkpoint | 67 s | 2590 |
-| Untuned base | 66 s | 2219 |
+| Adapter on top of the base, unmerged | 79 s | 2702 |
+| Merged checkpoint | 63 s | 2708 |
+| Untuned base | 63 s | 2455 |
 
 Same score for the adapter and its merge (96.2% turn accuracy, identical wrong turns), so replaying
 the adapter straight after training is enough; merge for serving. Most of the time is the prompt:
@@ -81,9 +67,9 @@ slower until it was unusable.
 **Evaluation has its own lever.** Each evaluated position materializes logits over the whole
 vocabulary (152k floats for Qwen3), so an eval batch of 8 examples of ~900 tokens is several
 gigabytes training never allocates. `training.eval_batch_size` therefore defaults to the train
-batch size instead of transformers' 8. One pair of runs on the same machine: with 8, evaluating a
-31-dialogue set took 27 s after the first epoch and 148 s after the second; with 1, the two
-evaluations of the run above took 47 s and 49 s for 106 examples, no drift.
+batch size instead of transformers' 8; at 1, the run above evaluated its 106 examples in 48 s and
+46 s with no drift between epochs. Raising it is the first thing to blame if evaluation slows down
+from one epoch to the next.
 
 Process memory is a poor guide to what a run needs; the footprint expands to fill what is
 available. The levers, in order:

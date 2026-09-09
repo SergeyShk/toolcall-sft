@@ -32,7 +32,7 @@ demonstrated end to end on one scenario: a payment assistant with three tools.
   argument accuracy, for the tune and for the untuned base.
 - **Laptop first.** Qwen3-0.6B with LoRA on Apple Silicon by default; the same config picks up CUDA
   or falls back to CPU. QLoRA config for an 8B model on one GPU.
-- **No framework.** `transformers.Trainer` + `peft`, about 2000 lines you can read in an afternoon,
+- **No framework.** `transformers.Trainer` + `peft`, about 4000 lines you can read in an afternoon,
   strict typing, offline tests.
 
 ## Quickstart
@@ -242,24 +242,23 @@ right call, and `tcsft-train predict` answers it per turn:
 - **Truncated turns.** Generation that hit `--max-new-tokens` instead of an end-of-turn token,
   counted separately: to the scorer a cut-off turn looks like a plain reply.
 
-On the held-out split of the default run (33 dialogues, 106 assistant turns), greedy, scored on an
-M3 Pro. The middle column is the same config trained with the whole-dialogue rendering the diagram
-at the top warns about, on an earlier revision of the generator: it learned that a `<think>` block
-means "reply", so it stopped calling tools once the server started inserting one.
+`make demo` end to end on an M3 Pro, greedy, scored on its held-out split — the 300-dialogue
+corpus at the default seed, 33 dialogues and 106 assistant turns:
 
-| | Qwen3-0.6B, untuned | + LoRA, whole-dialogue render | + LoRA, per-turn (this repo) |
-|---|---|---|---|
-| Turn accuracy | 74.5% | 58.5% | **96.2%** |
-| Missed calls, of 50 call turns | 19 | 44 | 0 |
-| False fires, of 56 reply turns | 0 | 0 | 0 |
-| `get_payees` exact recall | 0.75 | 0.00 | 1.00 |
-| `create_payment` exact recall | 0.12 | 0.35 | 1.00 |
-| `escalate` exact recall | 0.00 | 0.00 | 0.20 |
+| | Qwen3-0.6B, untuned | + LoRA (this repo) |
+|---|---|---|
+| Turn accuracy | 74.5% | **96.2%** |
+| Missed calls, of 50 call turns | 19 | 0 |
+| False fires, of 56 reply turns | 0 | 0 |
+| `get_payees` exact recall | 0.75 | 1.00 |
+| `create_payment` exact recall | 0.12 | 1.00 |
+| `escalate` exact recall | 0.00 | 0.20 |
 
-The per-turn model's four misses are all `escalate`: its `reason` argument is free text and the
-model paraphrases it, so exact match is the wrong yardstick there. The synthetic split is
-low-entropy, so a tune should sit near the ceiling on it; the table that matters is this one on
-real dialogues.
+Nothing on either side was malformed, schema-invalid or cut off at the token budget, and the merged
+checkpoint scores the same as the adapter turn for turn. The tune's four misses are all `escalate`:
+its `reason` argument is free text and the model paraphrases it, so exact match is the wrong
+yardstick there. The synthetic split is low-entropy, so a tune should sit near the ceiling on it;
+the table that matters is this one on real dialogues.
 
 `predictions.jsonl` has one record per turn: expected and predicted calls, the schema problems of
 each predicted call, whether generation was cut off, the raw output, and the content on both sides;
