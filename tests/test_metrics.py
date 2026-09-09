@@ -103,6 +103,16 @@ def test_evaluate_turns_headline_and_decisions() -> None:
     assert report.calls.exact_recall == 1 / 3
 
 
+def test_evaluate_turns_splits_the_headline_between_call_and_reply_turns() -> None:
+    report = evaluate_turns([_turn([_call("a")], [_call("a")]), _turn([_call("a")], []), _turn([], []), _turn([], [])])
+
+    assert report.correct_turns == 3
+    assert (report.correct_call_turns, report.expected_call_turns) == (1, 2)
+    assert (report.correct_reply_turns, report.expected_text_turns) == (2, 2)
+    assert report.as_dict()["decisions"]["correct_reply_turns"] == 2
+    assert "1 of 2 call turns, 2 of 2 reply turns, whose text is not scored" in format_report(report)
+
+
 def test_evaluate_turns_malformed_block_counts_as_acting_and_spoils_the_turn() -> None:
     report = evaluate_turns(
         [

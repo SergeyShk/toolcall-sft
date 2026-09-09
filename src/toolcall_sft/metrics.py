@@ -9,7 +9,9 @@ The report answers, in this order: did the model make the right decision on
 each turn (call or reply), did it pick the right tool, did it get the arguments
 right, and would its calls have run at all (parsed, schema-valid). Free text is
 not scored. A turn is correct when its calls are exactly the reference calls and
-nothing failed to parse.
+nothing failed to parse, so a turn whose reference is a reply is correct as soon
+as the model calls nothing — which is why the headline is reported split between
+call turns and reply turns.
 
 A rate with nothing to divide by is None. Argument accuracy covers only the calls
 that found a partner by name.
@@ -150,6 +152,8 @@ class GroupReport:
 class ToolCallReport:
     turns: int
     correct_turns: int
+    correct_call_turns: int
+    """Of the correct turns, those whose reference makes a call; the rest were scored on calling nothing."""
     expected_call_turns: int
     """Turns whose reference makes at least one call; the rest expect a reply."""
     false_fires: int
@@ -167,6 +171,10 @@ class ToolCallReport:
     @property
     def turn_accuracy(self) -> float | None:
         return _rate(self.correct_turns, self.turns)
+
+    @property
+    def correct_reply_turns(self) -> int:
+        return self.correct_turns - self.correct_call_turns
 
     @property
     def expected_text_turns(self) -> int:
@@ -198,6 +206,8 @@ class ToolCallReport:
             "decisions": {
                 "expected_call_turns": self.expected_call_turns,
                 "expected_text_turns": self.expected_text_turns,
+                "correct_call_turns": self.correct_call_turns,
+                "correct_reply_turns": self.correct_reply_turns,
                 "false_fires": self.false_fires,
                 "missed_calls": self.missed_calls,
                 "false_fire_rate": _round(self.false_fire_rate),
@@ -256,6 +266,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
     per_tool: dict[str, _CallSums] = {}
     per_group: dict[str, _GroupSums] = {}
     correct_turns = 0
+    correct_call_turns = 0
     expected_call_turns = 0
     false_fires = 0
     missed_calls = 0
@@ -273,6 +284,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
         false_fire = not turn.expected and acted
         missed = bool(turn.expected) and not acted
         correct_turns += correct
+        correct_call_turns += correct and bool(turn.expected)
         expected_call_turns += bool(turn.expected)
         false_fires += false_fire
         missed_calls += missed
@@ -288,6 +300,7 @@ def evaluate_turns(turns: Sequence[TurnRecord]) -> ToolCallReport:
     return ToolCallReport(
         turns=len(turns),
         correct_turns=correct_turns,
+        correct_call_turns=correct_call_turns,
         expected_call_turns=expected_call_turns,
         false_fires=false_fires,
         missed_calls=missed_calls,
@@ -318,6 +331,8 @@ def format_report(report: ToolCallReport) -> str:
     """The report as a few lines of text, headline first."""
     lines = [
         f"turns: {report.turns}, correct: {report.correct_turns} ({_percent(report.turn_accuracy)})",
+        f"  {report.correct_call_turns} of {report.expected_call_turns} call turns, "
+        f"{report.correct_reply_turns} of {report.expected_text_turns} reply turns, whose text is not scored",
         f"decisions: {report.expected_call_turns} turns expect a call, {report.expected_text_turns} a reply; "
         f"false fires {report.false_fires} ({_percent(report.false_fire_rate)} of reply turns), "
         f"missed calls {report.missed_calls} ({_percent(report.missed_call_rate)} of call turns)",

@@ -228,8 +228,9 @@ right call, and `tcsft-train predict` answers it per turn:
   mistake early in a dialogue does not hide the turns after it. Greedy, so the number is
   reproducible. What this does not measure is how the model recovers from its own mistakes; that
   needs a tool simulator driving the served model.
-- **Turn accuracy** is the headline: the calls are exactly the reference calls (order-insensitive),
-  and nothing failed to parse. Free text is not scored.
+- **Turn accuracy** is the headline, reported split between call turns and reply turns: the calls
+  are exactly the reference calls (order-insensitive), and nothing failed to parse. Free text is not
+  scored, so a turn whose reference is a reply is correct as soon as the model calls nothing.
 - **False fires and missed calls.** A call where the reference replies with text, and the reverse.
   The negative branches exist to measure the first one.
 - **Per tool and per branch.** Precision, recall and argument accuracy by tool; turn accuracy by
@@ -248,17 +249,21 @@ corpus at the default seed, 33 dialogues and 106 assistant turns:
 | | Qwen3-0.6B, untuned | + LoRA (this repo) |
 |---|---|---|
 | Turn accuracy | 74.5% | **96.2%** |
+| Correct call turns, of 50 | 23 | **46** |
 | Missed calls, of 50 call turns | 19 | 0 |
 | False fires, of 56 reply turns | 0 | 0 |
 | `get_payees` exact recall | 0.75 | 1.00 |
 | `create_payment` exact recall | 0.12 | 1.00 |
 | `escalate` exact recall | 0.00 | 0.20 |
 
-Nothing on either side was malformed, schema-invalid or cut off at the token budget, and the merged
-checkpoint scores the same as the adapter turn for turn. The tune's four misses are all `escalate`:
-its `reason` argument is free text and the model paraphrases it, so exact match is the wrong
-yardstick there. The synthetic split is low-entropy, so a tune should sit near the ceiling on it;
-the table that matters is this one on real dialogues.
+Read the call-turn row, not the headline: both models take all 56 reply turns, because a reply turn
+is correct as soon as no tool was called. The untuned one spends several of them picking one of two
+matching payees and announcing the payment, and still counts. Nothing on either side was malformed,
+schema-invalid or cut off at the token budget, and the merged checkpoint scores the same as the
+adapter turn for turn. The tune's four misses are all `escalate`: its `reason` argument is free text
+and the model paraphrases it, so exact match is the wrong yardstick there. The synthetic split is
+low-entropy, so a tune should sit near the ceiling on it; the table that matters is this one on real
+dialogues.
 
 `predictions.jsonl` has one record per turn: expected and predicted calls, the schema problems of
 each predicted call, whether generation was cut off, the raw output, and the content on both sides;
