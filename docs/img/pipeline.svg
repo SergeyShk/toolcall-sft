@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="230" viewBox="0 0 1000 230" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1130" height="230" viewBox="0 0 1130 230" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
   <defs>
     <style>
       .grp { fill: #f8fafc; stroke: #e2e8f0; stroke-dasharray: 4 3; }
@@ -14,12 +14,12 @@
       <path d="M0,0 L8,4 L0,8 z" fill="#94a3b8"/>
     </marker>
   </defs>
-  <rect x="0.5" y="0.5" width="999" height="229" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+  <rect x="0.5" y="0.5" width="1129" height="229" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
 
   <!-- groups -->
   <rect x="20" y="40" width="612" height="150" rx="10" class="grp"/>
   <text x="34" y="60" class="gl">DATA SIDE · tcsft · no torch needed</text>
-  <rect x="648" y="40" width="332" height="150" rx="10" class="grp"/>
+  <rect x="648" y="40" width="462" height="150" rx="10" class="grp"/>
   <text x="662" y="60" class="gl">TRAINING SIDE · tcsft-train · torch + peft</text>
 
   <!-- boxes: y=84 h=52 -->
@@ -39,27 +39,33 @@
   <text x="551" y="106" text-anchor="middle" class="cmd">split</text>
   <text x="551" y="123" text-anchor="middle" class="sub">dedup + content hash</text>
 
-  <rect x="664" y="84" width="140" height="52" rx="8" class="boxg"/>
-  <text x="734" y="106" text-anchor="middle" class="cmd">train</text>
-  <text x="734" y="123" text-anchor="middle" class="sub">LoRA or QLoRA</text>
+  <rect x="664" y="84" width="130" height="52" rx="8" class="boxg"/>
+  <text x="729" y="106" text-anchor="middle" class="cmd">train</text>
+  <text x="729" y="123" text-anchor="middle" class="sub">LoRA or QLoRA</text>
 
-  <rect x="824" y="84" width="140" height="52" rx="8" class="box"/>
-  <text x="894" y="106" text-anchor="middle" class="cmd">merge</text>
-  <text x="894" y="123" text-anchor="middle" class="sub">standalone weights</text>
+  <rect x="814" y="84" width="130" height="52" rx="8" class="boxg"/>
+  <text x="879" y="106" text-anchor="middle" class="cmd">predict</text>
+  <text x="879" y="123" text-anchor="middle" class="sub">replay eval, score calls</text>
+
+  <rect x="964" y="84" width="130" height="52" rx="8" class="box"/>
+  <text x="1029" y="106" text-anchor="middle" class="cmd">merge</text>
+  <text x="1029" y="123" text-anchor="middle" class="sub">standalone weights</text>
 
   <!-- arrows -->
   <path d="M166,110 L184,110" class="arrow"/>
   <path d="M316,110 L334,110" class="arrow"/>
   <path d="M466,110 L484,110" class="arrow"/>
   <path d="M616,110 L662,110" class="arrow"/>
-  <path d="M804,110 L822,110" class="arrow"/>
+  <path d="M794,110 L812,110" class="arrow"/>
+  <path d="M944,110 L962,110" class="arrow"/>
 
   <!-- artifacts -->
   <text x="101" y="164" text-anchor="middle" class="art">data/all.jsonl</text>
   <text x="551" y="164" text-anchor="middle" class="art">train.jsonl · eval.jsonl</text>
-  <text x="734" y="164" text-anchor="middle" class="art">adapter/ · example.txt</text>
-  <text x="894" y="164" text-anchor="middle" class="art">merged/</text>
+  <text x="729" y="164" text-anchor="middle" class="art">adapter/ · example.txt</text>
+  <text x="879" y="164" text-anchor="middle" class="art">predictions.jsonl → tcsft evaluate</text>
+  <text x="1029" y="164" text-anchor="middle" class="art">merged/</text>
 
   <!-- serving -->
-  <text x="500" y="215" text-anchor="middle" class="sub">serve merged/ with vLLM, Ollama or llama.cpp: same chat template, same enable_thinking=false</text>
+  <text x="565" y="215" text-anchor="middle" class="sub">serve merged/ with vLLM, Ollama or llama.cpp: same chat template, same enable_thinking=false</text>
 </svg>

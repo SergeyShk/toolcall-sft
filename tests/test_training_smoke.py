@@ -1,4 +1,5 @@
-"""End-to-end smoke test of run_sft and merge_adapter on a tiny random Qwen3 built in the test.
+"""End-to-end smoke test of run_sft, merge_adapter and run_predictions on a tiny random Qwen3
+built in the test, plus the predict failure paths that need torch to reach.
 
 CPU, offline, a few seconds. Skipped when torch is not installed.
 """
@@ -10,13 +11,22 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from click.testing import CliRunner  # noqa: E402
 from tokenizers import Regex, Tokenizer, decoders  # noqa: E402
 from tokenizers.models import WordLevel  # noqa: E402
 from tokenizers.pre_tokenizers import Split  # noqa: E402
 from transformers import PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM  # noqa: E402
 
 from toolcall_sft import Dialogue, Message, Role, ToolCall, load_experiment_config, write_dialogues  # noqa: E402
-from toolcall_sft.training import merge_adapter, run_sft  # noqa: E402
+from toolcall_sft.cli import main as tcsft  # noqa: E402
+from toolcall_sft.train_cli import main as tcsft_train  # noqa: E402
+from toolcall_sft.training import (  # noqa: E402
+    PredictionError,
+    PredictionSettings,
+    merge_adapter,
+    run_predictions,
+    run_sft,
+)
 
 QWEN3_TEMPLATE = (Path(__file__).parent / "templates" / "qwen3.jinja").read_text(encoding="utf-8")
 
@@ -31,11 +41,14 @@ def _tiny_model_and_tokenizer(directory: Path) -> None:
     backend = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
     backend.pre_tokenizer = Split(Regex(r"[\s\S]"), behavior="isolated")
     backend.decoder = decoders.Fuse()
-    tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]", pad_token="<|pad|>")
+    # eos is the end-of-turn token, as in the real Qwen3 tokenizer; generation must be able to stop.
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend, unk_token="[UNK]", pad_token="<|pad|>", eos_token="<|im_end|>"
+    )
     tokenizer.chat_template = QWEN3_TEMPLATE
     tokenizer.save_pretrained(str(directory))
     config = Qwen3Config(
-        vocab_size=len(vocab),
+        vocab_size=len(tokenizer),
         hidden_size=32,
         intermediate_size=64,
         num_hidden_layers=2,
@@ -44,6 +57,7 @@ def _tiny_model_and_tokenizer(directory: Path) -> None:
         head_dim=8,
         max_position_embeddings=1024,
     )
+    torch.manual_seed(0)  # the untrained weights decide what the replay generates
     Qwen3ForCausalLM(config).save_pretrained(str(directory))
 
 
@@ -67,6 +81,44 @@ def _dialogues() -> tuple[Dialogue, ...]:
             )
         )
     return tuple(dialogues)
+
+
+def test_predict_without_a_trained_adapter_names_the_missing_directory(tmp_path: Path) -> None:
+    config_path = tmp_path / "experiment.yaml"
+    config_path.write_text(
+        f"""
+run_name: smoke
+base_model: {tmp_path / "base"}
+output_dir: {tmp_path / "out"}
+dataset:
+  train_path: {tmp_path / "train.jsonl"}
+  max_seq_length: 512
+lora:
+  r: 4
+  alpha: 8
+training:
+  epochs: 1
+  learning_rate: 1.0e-3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 1
+""",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(tcsft_train, ["predict", "--config", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "nothing to replay" in result.output
+    assert "tcsft-train train" in result.output
+
+
+def test_predict_reports_a_model_it_cannot_load(tmp_path: Path) -> None:
+    settings = PredictionSettings(
+        model=str(tmp_path / "missing"), max_seq_length=512, chat_template_kwargs={}, device="cpu"
+    )
+
+    with pytest.raises(PredictionError, match="no tokenizer to load"):
+        run_predictions(settings, (), out_path=tmp_path / "predictions.jsonl")
 
 
 def test_run_sft_trains_saves_and_records_the_run(tmp_path: Path) -> None:
@@ -116,3 +168,45 @@ training:
 
     assert (merged_dir / "model.safetensors").exists()
     assert (merged_dir / "chat_template.jinja").exists()
+
+    # The adapter replays on top of its base; the merged checkpoint replays on its own.
+    for model_dir, name in ((adapter_dir, "adapter"), (merged_dir, "merged")):
+        settings = PredictionSettings(
+            model=str(model_dir),
+            max_seq_length=512,
+            chat_template_kwargs={"enable_thinking": False},
+            max_new_tokens=8,
+            batch_size=3,  # 4 turns: one full batch and one short one
+            device="cpu",
+        )
+        predictions_path = tmp_path / f"{name}.predictions.jsonl"
+
+        run = run_predictions(
+            settings, dialogues[4:], out_path=predictions_path, data_path=tmp_path / "eval.jsonl", limit=2
+        )
+
+        assert run.dialogues == 2
+        assert len(run.turns) == 4
+        records = [json.loads(line) for line in predictions_path.read_text(encoding="utf-8").splitlines()]
+        # One token per character here, plus the stop token when the model finished on its own.
+        characters = sum(len(record["raw_output"]) for record in records)
+        assert run.generated_tokens == characters + sum(not record["truncated"] for record in records)
+        assert run.generated_tokens <= 4 * 8
+        # Records land as their batch finishes, longest prompt first, not in dialogue order.
+        by_turn = {(record["dialogue_id"], record["turn_index"]): record for record in records}
+        assert sorted(by_turn) == [("smoke-4", 2), ("smoke-4", 4), ("smoke-5", 2), ("smoke-5", 4)]
+        assert by_turn["smoke-4", 2]["expected"] == [{"name": "get_payees", "arguments": {"name": "Noah"}}]
+        assert by_turn["smoke-4", 4]["expected"] == []
+        assert by_turn["smoke-4", 4]["expected_content"] == "Noah - send $50?"
+        assert all(isinstance(record["raw_output"], str) for record in records)
+        assert all(record.keys() >= {"predicted", "predicted_content", "malformed", "truncated"} for record in records)
+        meta = json.loads(predictions_path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        assert meta["model"] == str(model_dir)
+        assert meta["base_model"] == (str(tmp_path / "base") if name == "adapter" else None)
+        assert meta["data"] == {"path": str(tmp_path / "eval.jsonl"), "limit": 2, "dialogues": 2, "turns": 4}
+        assert meta["decoding"] == {"greedy": True, "max_new_tokens": 8, "batch_size": 3}
+        assert meta["resolved"] == {"device": "cpu", "dtype": "float32"}
+
+        scored = CliRunner().invoke(tcsft, ["evaluate", str(predictions_path), "--show", "1"])
+        assert scored.exit_code == 0, scored.output
+        assert scored.output.startswith("turns: 4, correct: ")

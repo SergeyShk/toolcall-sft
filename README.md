@@ -27,9 +27,12 @@ demonstrated end to end on one scenario: a payment assistant with three tools.
   verbatim, or tokenization fails loudly instead of training on a misaligned target.
 - **Balanced synthetic data out of the box.** Seven dialogue branches, half of which must *not* call
   the write tool. `git clone` to a trained adapter in one `make demo`.
+- **Scored per decision, not per token.** `tcsft-train predict` replays the held-out dialogues
+  turn by turn and `tcsft evaluate` reports turn accuracy, false fires, missed calls and per-tool
+  argument accuracy, for the tune and for the untuned base.
 - **Laptop first.** Qwen3-0.6B with LoRA on Apple Silicon by default; the same config picks up CUDA
   or falls back to CPU. QLoRA config for an 8B model on one GPU.
-- **No framework.** `transformers.Trainer` + `peft`, about 2000 lines you can read in an afternoon,
+- **No framework.** `transformers.Trainer` + `peft`, about 4000 lines you can read in an afternoon,
   strict typing, offline tests.
 
 ## Quickstart
@@ -37,7 +40,7 @@ demonstrated end to end on one scenario: a payment assistant with three tools.
 ```bash
 git clone https://github.com/SergeyShk/toolcall-sft && cd toolcall-sft
 uv sync
-make demo        # generate → validate → stats → render → split → train
+make demo        # generate → validate → stats → render → split → train → predict
 ```
 
 Step by step:
@@ -61,7 +64,14 @@ uv run tcsft-train train --config configs/mac_mps.yaml
 uv run tcsft-train merge --adapter outputs/payments-qwen3-0.6b-lora/adapter \
                          --output  outputs/payments-qwen3-0.6b-lora/merged
 
-# 6. Serve (OpenAI-compatible); every request carries "chat_template_kwargs": {"enable_thinking": false}
+# 6. Replay the held-out dialogues through the adapter and score every turn; same command with
+#    --model <base> for the untuned baseline
+uv run tcsft-train predict --config configs/mac_mps.yaml
+uv run tcsft-train predict --config configs/mac_mps.yaml --model Qwen/Qwen3-0.6B \
+                           --out outputs/payments-qwen3-0.6b-lora/predictions.base.jsonl
+uv run tcsft evaluate outputs/payments-qwen3-0.6b-lora/predictions.jsonl --show 10
+
+# 7. Serve (OpenAI-compatible); every request carries "chat_template_kwargs": {"enable_thinking": false}
 vllm serve outputs/payments-qwen3-0.6b-lora/merged --enable-auto-tool-choice --tool-call-parser hermes
 ```
 
@@ -71,7 +81,7 @@ magnitude faster. Details and memory levers: [docs/HARDWARE.md](docs/HARDWARE.md
 
 ## How it works
 
-<img src="docs/img/pipeline.svg" alt="generate → validate/stats → render → split → train → merge → serve" width="100%">
+<img src="docs/img/pipeline.svg" alt="generate → validate/stats → render → split → train → predict → merge → serve" width="100%">
 
 | Step | What it does |
 |---|---|
@@ -81,6 +91,8 @@ magnitude faster. Details and memory levers: [docs/HARDWARE.md](docs/HARDWARE.md
 | `tcsft render` | A dialogue exactly as the trainer sees it, with the loss span marked. Look at this before every run. |
 | `tcsft split` | Dedup + deterministic content-hash split, with a per-branch breakdown of the eval side. |
 | `tcsft-train train` | LoRA/QLoRA with `transformers.Trainer`. Writes `config.yaml`, `run.json` and `example.txt` next to the checkpoints. |
+| `tcsft-train predict` | Replays every assistant turn of a dialogue set through a model (adapter, merged checkpoint or untuned base), greedy, from the reference history. Writes `predictions.jsonl` and prints the score. |
+| `tcsft evaluate` | Scores a predictions file: turn accuracy, false fires and missed calls, per-tool precision and recall, argument accuracy, calls that would run. `--show` prints the wrong turns with the raw output, `--data` rechecks the calls against the dialogues. |
 | `tcsft-train merge` | Folds the adapter into the base weights (fp32 merge, bf16 once) for standalone serving. |
 
 `tcsft` needs no torch; transformers is imported only by the commands that render a chat template.
@@ -199,11 +211,69 @@ not yet run end to end by the author). Unknown keys are errors, not no-ops.
 | `training.precision` | `auto` | bf16 on an accelerator, fp32 on CPU. LoRA parameters stay fp32 on MPS. |
 | `training.eval_batch_size` | = train batch | Eval logits span the whole vocabulary; see [docs/HARDWARE.md](docs/HARDWARE.md). |
 | `training.load_in_4bit` / `use_liger_kernel` | `false` | CUDA only; refused up front elsewhere. |
+| `evaluation.max_new_tokens` / `batch_size` | 256 / 4 | Replay decoding for `tcsft-train predict`; its flags override them. |
 | `tracking.report_to` | `[]` | Add `["mlflow"]` and `mlflow_experiment` to log params, config and metrics. |
 
 [config.py](src/toolcall_sft/config.py) is the authority. Every run leaves `config.yaml`,
 `run.json` (resolved device, dataset sizes, versions, git state) and `example.txt` in its output
 directory.
+
+## Evaluation
+
+Loss stops being informative once the model has the format. The question is whether it makes the
+right call, and `tcsft-train predict` answers it per turn:
+
+- **Teacher-forced, greedy.** Every assistant turn is generated from the reference history, with
+  the same prompt the trainer built for that turn, so each decision is scored on its own and a
+  mistake early in a dialogue does not hide the turns after it. Greedy, so the number is
+  reproducible. What this does not measure is how the model recovers from its own mistakes; that
+  needs a tool simulator driving the served model.
+- **Turn accuracy** is the headline, reported split between call turns and reply turns: the calls
+  are exactly the reference calls (order-insensitive), and nothing failed to parse. Free text is not
+  scored, so a turn whose reference is a reply is correct as soon as the model calls nothing.
+- **False fires and missed calls.** A call where the reference replies with text, and the reverse.
+  The negative branches exist to measure the first one.
+- **Per tool and per branch.** Precision, recall and argument accuracy by tool; turn accuracy by
+  branch of the generator (the `dialogue_id` prefix). Argument accuracy is over the expected calls
+  that found a partner by name. A rate with nothing to divide by prints `—`.
+- **Would it run.** `<tool_call>` blocks that do not parse, and calls that parse but fail their
+  tool's schema: unknown tool, missing required argument, undeclared argument, wrong type, value
+  outside an `enum`. A dialogue that declares no `tools` is checked against nothing; its calls are
+  recorded unchecked.
+- **Truncated turns.** Generation that hit `--max-new-tokens` instead of an end-of-turn token,
+  counted separately: to the scorer a cut-off turn looks like a plain reply.
+
+`make demo` end to end on an M3 Pro, greedy, scored on its held-out split — the 300-dialogue
+corpus at the default seed, 33 dialogues and 106 assistant turns:
+
+| | Qwen3-0.6B, untuned | + LoRA (this repo) |
+|---|---|---|
+| Turn accuracy | 74.5% | **96.2%** |
+| Correct call turns, of 50 | 23 | **46** |
+| Missed calls, of 50 call turns | 19 | 0 |
+| False fires, of 56 reply turns | 0 | 0 |
+| `get_payees` exact recall | 0.75 | 1.00 |
+| `create_payment` exact recall | 0.12 | 1.00 |
+| `escalate` exact recall | 0.00 | 0.20 |
+
+Read the call-turn row, not the headline: both models take all 56 reply turns, because a reply turn
+is correct as soon as no tool was called. The untuned one spends several of them picking one of two
+matching payees and announcing the payment, and still counts. Nothing on either side was malformed,
+schema-invalid or cut off at the token budget, and the merged checkpoint scores the same as the
+adapter turn for turn. The tune's four misses are all `escalate`: its `reason` argument is free text
+and the model paraphrases it, so exact match is the wrong yardstick there. The synthetic split is
+low-entropy, so a tune should sit near the ceiling on it; the table that matters is this one on real
+dialogues.
+
+`predictions.jsonl` has one record per turn: expected and predicted calls, the schema problems of
+each predicted call, whether generation was cut off, the raw output, and the content on both sides;
+a `.meta.json` next to it records the model and its base, the data replayed, decoding, versions and
+git state. Records are written as each batch finishes, so a replay that dies leaves what it scored;
+that puts the file in generation order rather than dialogue order. `tcsft evaluate --show 10` prints
+the wrong turns with the raw output, `--json` the full report. The format is plain enough to write
+from any other harness and score the same way — the minimum is
+`{"expected": [...], "predicted": [...]}` per line — and `--data eval.jsonl` rechecks such a file's
+calls against the tool schemas of the dialogues themselves.
 
 ## Serving
 
@@ -212,10 +282,6 @@ Two things it does not carry: the **mode** (a Qwen3 tune from this pipeline is o
 `enable_thinking: false`; pass it per request or as the server's default) and **sampling
 parameters** (`generation_config.json` is inherited from the base; Qwen recommends temperature
 0.7, top_p 0.8, top_k 20 for non-thinking mode).
-
-Evaluation of predicted tool calls: `tcsft evaluate predictions.jsonl` scores
-`{"expected": [...], "predicted": [...]}` per turn with name and exact-match precision/recall.
-A `predict` command that produces that file from a tuned model is the next thing on the list.
 
 ## Documentation
 
@@ -244,11 +310,12 @@ src/toolcall_sft/
 ├── masking.py       per-turn, chat-template-exact examples
 ├── stats.py         token statistics, length filter
 ├── anonymizer.py    deterministic pseudonymization
-├── metrics.py       tool-call precision / recall
+├── parsing.py       tool calls out of generated text, schema check
+├── metrics.py       turn accuracy, false fires, per-tool precision / recall
 ├── config.py        typed experiment YAML
 ├── cli.py           tcsft
 ├── train_cli.py     tcsft-train
-└── training/        sft.py, merge.py  (the only part that needs torch)
+└── training/        sft.py, predict.py, merge.py  (the only part that needs torch)
 ```
 
 ## License

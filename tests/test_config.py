@@ -43,6 +43,8 @@ def test_load_experiment_config_minimal_applies_defaults(tmp_path: Path) -> None
     assert config.training.device == "auto"
     assert config.training.precision == "auto"
     assert config.training.load_in_4bit is False
+    assert config.evaluation.max_new_tokens == 256
+    assert config.evaluation.batch_size == 4
     assert config.training.use_liger_kernel is False
     assert config.training.seed == 42
     assert config.tracking.report_to == ()
@@ -150,3 +152,17 @@ def test_load_experiment_config_template_kwargs_must_be_scalars(tmp_path: Path) 
 
     with pytest.raises(ConfigError, match="chat_template_kwargs"):
         load_experiment_config(_write_config(tmp_path, text))
+
+
+def test_evaluation_section_overrides_the_replay_defaults(tmp_path: Path) -> None:
+    config = load_experiment_config(
+        _write_config(tmp_path, MINIMAL_CONFIG + "evaluation:\n  max_new_tokens: 64\n  batch_size: 8\n")
+    )
+
+    assert config.evaluation.max_new_tokens == 64
+    assert config.evaluation.batch_size == 8
+
+
+def test_unknown_evaluation_key_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="evaluation.temperature"):
+        load_experiment_config(_write_config(tmp_path, MINIMAL_CONFIG + "evaluation:\n  temperature: 0.7\n"))

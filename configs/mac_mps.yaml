@@ -15,6 +15,10 @@ lora:
   alpha: 32
   dropout: 0.05
 
+evaluation:
+  max_new_tokens: 256          # replay budget per turn; `tcsft-train predict --max-new-tokens` overrides
+  batch_size: 4
+
 training:
   epochs: 2
   learning_rate: 2.0e-4
